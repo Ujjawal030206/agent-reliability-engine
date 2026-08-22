@@ -1,5 +1,7 @@
 # 🛡️ Agent Reliability Engine
 
+*Agent infrastructure · testing · failure prediction*
+
 Continuous integration for autonomous agents. Point this at an AI agent,
 and it automatically generates realistic + adversarial test scenarios, runs
 the agent in a sandbox, classifies *why* it failed, and produces a reliability
@@ -223,8 +225,8 @@ Three things to know about the free tier before you share the link:
   For a persistent tracker you'd attach a Render disk (paid) or swap SQLite for
   a hosted Postgres.
 - **Your free LLM quota is public.** Anyone with the link can trigger runs
-  against your Groq key and exhaust the rate limit. For a submission link that
-  is usually fine; if you'd rather not risk it, deploy without a key set — the
+  against your Groq key and exhaust the rate limit. For a short-lived demo link
+  that is usually fine; if you'd rather not risk it, deploy without a key set — the
   dashboard falls back to demo mode automatically and stays fully explorable.
 
 ### The Streamlit prototype — Streamlit Community Cloud
