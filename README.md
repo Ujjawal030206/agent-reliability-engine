@@ -129,6 +129,33 @@ original Stitch export kept alongside it as `design/code.html`.
 > from CDNs, so the dashboard needs an internet connection to render as
 > designed. The API itself has no such dependency.
 
+### Demo mode (no API key, no spend)
+
+Every endpoint that evaluates anything calls Claude, so without an
+`ANTHROPIC_API_KEY` the dashboard has nothing real to render. **Demo mode**
+fills that gap: it swaps in bundled fixtures from `static/demo/` so all four
+views are fully explorable — a v1 run scoring 33.3, a v2 run scoring 83.3 (so
+the Regression Tracker shows the improvement), a red-team attack that breaches
+`v1_baseline`, and one that `v2_guarded` holds off.
+
+It turns on automatically when `/api/health` reports no key, and there's a
+**Demo mode** toggle in the header to switch it off once you have one.
+
+**This data is canned, not measured.** It is hand-authored to match the shapes
+in `API.md` — no agent was actually tested to produce it. The UI says so
+everywhere it appears: a persistent banner, a `demo data` badge on every
+scorecard, history row, and verdict, and an explicit note that the goal and
+max-turns controls don't apply. Don't present it to anyone as a real
+evaluation result; it exists so the interface can be demonstrated and
+developed against, not to stand in for the engine's output.
+
+For real numbers you need a key. A full 15-scenario run is roughly one
+target-agent tool-use chain plus one judge call per scenario — on the default
+`claude-sonnet-5` agent + `claude-haiku-4-5` judge that lands in the region of
+a few tens of cents per run, and setting `AGENT_MODEL=claude-haiku-4-5` cuts it
+further. Actual cost depends on how many turns each scenario takes; check
+current rates at [anthropic.com/pricing](https://www.anthropic.com/pricing).
+
 ## Deploying a live link (Streamlit Community Cloud, free, ~5 min)
 
 For a hosted demo link, this is the fastest path:

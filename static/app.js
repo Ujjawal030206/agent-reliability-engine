@@ -16,6 +16,8 @@ const state = {
   logFilter: "all",
   runs: [],
   busy: false,
+  demo: false,        // serve canned fixtures instead of calling the LLM endpoints
+  demoRuns: [],       // demo runs "recorded" this session, for the tracker
 };
 
 /* ------------------------------------------------------------------ utils */
@@ -39,6 +41,44 @@ async function api(path, options) {
   }
   return body;
 }
+
+/* ------------------------------------------------------------- demo mode */
+/* The evaluation endpoints all call Claude, so without an ANTHROPIC_API_KEY
+ * the dashboard has nothing to show. Demo mode swaps in the fixtures under
+ * static/demo/ so the UI is fully explorable with no key and no spend. The
+ * fixtures are clearly-labelled sample data, never presented as a live run:
+ * every surface that renders them carries a DEMO badge. */
+
+const DEMO_FIXTURES = {
+  run: { v1_baseline: "demo/run_v1_baseline.json", v2_guarded: "demo/run_v2_guarded.json" },
+  redteam: { v1_baseline: "demo/redteam_v1_baseline.json", v2_guarded: "demo/redteam_v2_guarded.json" },
+};
+
+async function loadFixture(kind, version) {
+  const map = DEMO_FIXTURES[kind];
+  const path = map[version] || map[Object.keys(map)[0]];
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`Demo fixture ${path} could not be loaded (HTTP ${res.status}).`);
+  return res.json();
+}
+
+function setDemo(on) {
+  state.demo = on;
+  const box = $("#demo-toggle");
+  if (box) box.checked = on;
+  $("#demo-banner").classList.toggle("hidden", !on);
+  $("#demo-banner").classList.toggle("flex", on);
+  if (!on) {
+    state.demoRuns = [];
+    loadRuns();
+  } else {
+    renderHistory();
+    renderAnalytics();
+  }
+}
+
+const demoBadge = () =>
+  chip("demo data", "text-tertiary border-tertiary/40 bg-tertiary/10");
 
 let toastTimer = null;
 function toast(title, message) {
@@ -120,6 +160,8 @@ async function loadHealth() {
     $("#health-label").textContent = h.has_api_key ? "API key loaded" : "no API key";
     $("#key-banner").classList.toggle("hidden", !!h.has_api_key);
     $("#key-banner").classList.toggle("flex", !h.has_api_key);
+    // With no key the live endpoints can only 400, so start in demo mode.
+    if (!h.has_api_key) setDemo(true);
   } catch (err) {
     $("#health-dot").className = "inline-block w-1.5 h-1.5 rounded-full align-middle mr-1 bg-error";
     $("#health-label").textContent = "server unreachable";
@@ -217,10 +259,17 @@ $("#btn-generate").addEventListener("click", async () => {
   btn.disabled = true;
   btn.innerHTML = `<span class="material-symbols-outlined text-sm animate-spin">progress_activity</span> Generating…`;
   try {
-    const { scenarios } = await api("/api/scenarios/generate", {
-      method: "POST",
-      body: JSON.stringify({ n: Number($("#gen-n").value) }),
-    });
+    let scenarios;
+    if (state.demo) {
+      const fixture = await (await fetch("demo/generated_scenarios.json")).json();
+      await sleep(800);
+      scenarios = fixture.scenarios.slice(0, Number($("#gen-n").value));
+    } else {
+      ({ scenarios } = await api("/api/scenarios/generate", {
+        method: "POST",
+        body: JSON.stringify({ n: Number($("#gen-n").value) }),
+      }));
+    }
     state.generated = state.generated.concat(scenarios || []);
     renderScenarios();
   } catch (err) {
@@ -395,7 +444,9 @@ function renderRun(run) {
 
   const sc = run.scorecard;
   $("#score-ring").innerHTML = scoreRing(sc.score);
-  $("#run-id-label").textContent = "run_id " + run.run_id;
+  $("#run-id-label").innerHTML = run._demo
+    ? `${demoBadge()} <span class="ml-1">${esc(run.run_id)}</span>`
+    : "run_id " + esc(run.run_id);
   $("#stat-passed").textContent = sc.passed;
   $("#stat-failed").textContent = sc.failed;
   $("#stat-total").textContent = sc.total;
@@ -424,9 +475,20 @@ async function runEvaluation() {
   }, 1000);
 
   try {
-    const run = await api("/api/run", { method: "POST", body: JSON.stringify(body) });
+    let run;
+    if (state.demo) {
+      run = await loadFixture("run", body.agent_version);
+      await sleep(900); // let the loading state register; the real call is far slower
+      state.demoRuns.push({
+        run_id: run.run_id, agent_version: body.agent_version, timestamp: Date.now() / 1000,
+        score: run.scorecard.score, total_scenarios: run.scorecard.total,
+        passed: run.scorecard.passed, failed: run.scorecard.failed, _demo: true,
+      });
+    } else {
+      run = await api("/api/run", { method: "POST", body: JSON.stringify(body) });
+    }
     renderRun(run);
-    loadRuns();
+    if (state.demo) { renderHistory(); renderAnalytics(); } else { loadRuns(); }
   } catch (err) {
     toast("RUN_FAILED", err.message);
     if (!state.lastRun) $("#run-empty").classList.remove("hidden");
@@ -441,10 +503,15 @@ async function runEvaluation() {
 }
 
 $("#btn-header-run").addEventListener("click", runEvaluation);
+$("#demo-toggle").addEventListener("change", (e) => setDemo(e.target.checked));
 
 /* ------------------------------------------------------------ run history */
 
 const fmtTime = (ts) => new Date(ts * 1000).toLocaleString();
+
+// Stored runs plus any demo runs produced this session, oldest first.
+const allRuns = () =>
+  state.runs.concat(state.demo ? state.demoRuns : []).sort((a, b) => a.timestamp - b.timestamp);
 
 async function loadRuns() {
   try {
@@ -459,19 +526,21 @@ async function loadRuns() {
 }
 
 function renderHistory() {
-  if (!state.runs.length) {
+  const runs = allRuns();
+  if (!runs.length) {
     $("#run-history").innerHTML =
       `<div class="p-stack-md text-on-surface-variant font-body-md">No runs stored yet. Run an evaluation to populate the regression tracker.</div>`;
     return;
   }
-  $("#run-history").innerHTML = state.runs
+  $("#run-history").innerHTML = runs
     .slice()
     .reverse()
     .map((r) => `
-      <details class="log-row" data-run="${esc(r.run_id)}">
+      <details class="log-row" ${r._demo ? "" : `data-run="${esc(r.run_id)}"`}>
         <summary class="log-head px-stack-md py-3 flex items-center gap-3 flex-wrap">
           <span class="chev material-symbols-outlined text-on-surface-variant text-sm">chevron_right</span>
           <span class="font-label-mono text-label-mono text-primary">${esc(r.run_id)}</span>
+          ${r._demo ? demoBadge() : ""}
           ${chip(r.agent_version, "text-secondary border-secondary/40 bg-secondary/10")}
           <span class="font-label-mono text-label-mono text-on-surface-variant">${esc(fmtTime(r.timestamp))}</span>
           <span class="ml-auto flex gap-3 font-label-mono text-label-mono">
@@ -480,7 +549,11 @@ function renderHistory() {
             <span class="text-on-surface">${r.score}</span>
           </span>
         </summary>
-        <div class="px-stack-md pb-stack-md pl-12 run-detail font-body-md text-on-surface-variant">Loading…</div>
+        <div class="px-stack-md pb-stack-md pl-12 run-detail font-body-md text-on-surface-variant">${
+          r._demo
+            ? "Sample run — per-scenario detail is shown in the Reliability Logs above, not stored server-side."
+            : "Loading…"
+        }</div>
       </details>`)
     .join("");
 }
@@ -517,7 +590,7 @@ $("#run-history").addEventListener("toggle", async (e) => {
 const SERIES_COLORS = ["#c0c1ff", "#ffaaf7", "#7ee08a", "#ffb4ab", "#8083ff"];
 
 function renderAnalytics() {
-  const runs = state.runs;
+  const runs = allRuns();
   $("#an-runs").textContent = runs.length;
 
   if (!runs.length) {
@@ -704,7 +777,11 @@ function renderVerdict(data) {
       ${transcript.goal_achieved ? chip("goal achieved", "text-error border-error/40 bg-error/10") : ""}
       ${transcript.hit_iteration_cap ? chip("iteration cap", "text-tertiary border-tertiary/40 bg-tertiary/10") : ""}
       ${chip(transcript.target_version, "text-secondary border-secondary/40 bg-secondary/10")}
+      ${data._demo ? demoBadge() : ""}
     </div>
+    ${data._demo ? `<p class="font-label-mono text-[10px] leading-4 text-tertiary mb-2">
+      Canned transcript for ${esc(transcript.target_version)} — the goal and max-turns controls
+      are not applied in demo mode. Set an API key and turn demo mode off for a real adaptive attack.</p>` : ""}
     ${(classification.failure_modes || []).length
       ? `<div class="flex flex-wrap gap-1 mb-2">${classification.failure_modes
           .map((m) => chip(modeLabel(m), "text-error border-error/40 bg-error/10")).join("")}</div>`
@@ -736,14 +813,20 @@ async function launchRedTeam() {
   appendTyping(true);
 
   try {
-    const data = await api("/api/redteam", {
-      method: "POST",
-      body: JSON.stringify({
-        agent_version: $("#agent-version").value,
-        goal,
-        max_turns: Number($("#rt-turns").value),
-      }),
-    });
+    let data;
+    if (state.demo) {
+      data = await loadFixture("redteam", $("#agent-version").value);
+      await sleep(1200); // the real attack loop takes far longer; don't snap instantly
+    } else {
+      data = await api("/api/redteam", {
+        method: "POST",
+        body: JSON.stringify({
+          agent_version: $("#agent-version").value,
+          goal,
+          max_turns: Number($("#rt-turns").value),
+        }),
+      });
+    }
     removeTyping();
 
     const delay = SPEED_MS[$("#rt-speed").value] || 800;

@@ -88,6 +88,11 @@
       </h2>
     </div>
     <div class="flex flex-wrap gap-3 items-center">
+      <label class="flex items-center gap-2 cursor-pointer" title="Render bundled sample data instead of calling the live evaluation endpoints">
+        <input id="demo-toggle" type="checkbox" class="sr-only peer"/>
+        <div class="relative w-9 h-5 bg-surface-variant rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-tertiary"></div>
+        <span class="font-label-mono text-label-mono text-on-surface-variant">Demo mode</span>
+      </label>
       <label class="font-label-mono text-label-mono text-on-surface-variant">Agent Version</label>
       <select id="agent-version" class="bg-surface-container-lowest border border-[#2D333B] rounded p-2 text-on-surface font-body-md focus:border-primary focus:ring-1 focus:ring-primary outline-none appearance-none min-w-[170px]"></select>
       <button id="btn-header-run" class="px-6 py-2 bg-primary text-on-primary rounded font-label-mono text-label-mono hover:bg-primary-container transition-colors duration-200 flex items-center gap-2 shadow-[0_0_15px_rgba(192,193,255,0.3)]">
@@ -100,6 +105,14 @@
   <div id="key-banner" class="hidden px-gutter py-3 bg-error-container/40 border-b border-error/40 text-on-error-container font-label-mono text-label-mono items-center gap-2 shrink-0">
     <span class="material-symbols-outlined text-sm">key_off</span>
     <span>ANTHROPIC_API_KEY is not set on the server &mdash; live runs will fail. Add it to <code>.env</code> and restart uvicorn.</span>
+  </div>
+
+  <!-- Demo banner -->
+  <div id="demo-banner" class="hidden px-gutter py-3 bg-tertiary/10 border-b border-tertiary/40 text-tertiary font-label-mono text-label-mono items-center gap-2 shrink-0">
+    <span class="material-symbols-outlined text-sm">science</span>
+    <span><strong>DEMO MODE</strong> &mdash; runs and attacks render bundled sample data from
+      <code>static/demo/</code>. These are <strong>not live evaluations</strong> and no agent was
+      actually tested. Add an <code>ANTHROPIC_API_KEY</code> and switch demo mode off for real runs.</span>
   </div>
 
   <!-- Views -->
