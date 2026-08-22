@@ -38,7 +38,6 @@ STATIC_DIR = os.path.join(APP_DIR, "static")
 with open(os.path.join(DATA_DIR, "scenario_bank.json")) as f:
     SCENARIO_BANK = json.load(f)
 
-API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 JUDGE_MODEL = llm_providers.judge_model()
 
 app = FastAPI(title="Agent Reliability Engine API")

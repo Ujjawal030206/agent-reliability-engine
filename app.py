@@ -5,7 +5,7 @@ import uuid
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
-from anthropic import Anthropic
+import llm_providers
 
 from src import agent_under_test, failure_classifier, reliability_scorecard, db, scenario_generator, mock_tools
 
@@ -18,8 +18,11 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 with open(os.path.join(DATA_DIR, "scenario_bank.json")) as f:
     SCENARIO_BANK = json.load(f)
 
-API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "claude-haiku-4-5-20251001")
+# Provider-agnostic: whichever backend LLM_PROVIDER names (Anthropic, or a free
+# OpenAI-compatible tier via llm_providers.py). See .env.example.
+API_KEY = llm_providers.is_configured()
+JUDGE_MODEL = llm_providers.judge_model()
+PROVIDER = llm_providers.provider_name()
 
 st.title("🛡️ AI Agent Evaluation & Reliability Engine")
 st.caption("Continuous integration for autonomous agents")
@@ -53,10 +56,13 @@ scorecard and regression tracker.
 """)
     if not API_KEY:
         st.warning(
-            "No `ANTHROPIC_API_KEY` found. You can still explore the UI — the **Reliability "
-            "Scorecard** tab will show cached sample data. Set `ANTHROPIC_API_KEY` in a `.env` "
-            "file (see `.env.example`) to run live evaluations."
+            f"No API key found for provider `{PROVIDER}`. You can still explore the UI — the "
+            "**Reliability Scorecard** tab will show cached sample data. Copy `.env.example` to "
+            "`.env` and fill in one provider block (Groq and Gemini have free tiers) to run "
+            "live evaluations."
         )
+    else:
+        st.caption(f"Provider: `{PROVIDER}` · agent `{llm_providers.agent_model()}` · judge `{JUDGE_MODEL}`")
 
 # ---------------------------------------------------------------- Run
 with tab_run:
@@ -74,10 +80,10 @@ with tab_run:
     run_button = st.button("▶ Run evaluation", type="primary", disabled=not API_KEY)
 
     if not API_KEY:
-        st.info("Add `ANTHROPIC_API_KEY` to your environment to enable live runs.")
+        st.info(f"Configure a key for provider `{PROVIDER}` in `.env` to enable live runs.")
 
     if run_button and API_KEY:
-        client = Anthropic(api_key=API_KEY)
+        client = llm_providers.get_client()
         scenarios = full_pool[:n_scenarios]
         results = []
         progress = st.progress(0.0, text="Starting...")
@@ -185,10 +191,10 @@ with tab_bank:
         gen_button = st.button("Generate", disabled=not API_KEY)
 
     if not API_KEY:
-        st.info("Add `ANTHROPIC_API_KEY` to enable live scenario generation.")
+        st.info(f"Configure a key for provider `{PROVIDER}` in `.env` to enable live scenario generation.")
 
     if gen_button and API_KEY:
-        client = Anthropic(api_key=API_KEY)
+        client = llm_providers.get_client()
         with st.spinner("Generating adversarial scenarios..."):
             new_scenarios = scenario_generator.generate_scenarios(
                 client,
@@ -198,6 +204,7 @@ with tab_bank:
                 tool_names=[t["name"] for t in mock_tools.TOOL_SCHEMAS],
                 existing_scenarios=SCENARIO_BANK + st.session_state["dynamic_scenarios"],
                 n=int(n_gen),
+                model=JUDGE_MODEL,
             )
         if new_scenarios:
             st.session_state["dynamic_scenarios"].extend(new_scenarios)

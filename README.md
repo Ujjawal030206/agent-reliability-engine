@@ -63,7 +63,9 @@ flowchart LR
    breakdown, and stores every run in SQLite so scores can be tracked across
    agent versions over time.
 
-All of it is surfaced in a Streamlit dashboard (`app.py`) with five tabs:
+Two front ends sit on top of this, both driving the same engine: the
+**web dashboard** (`server.py` + `static/`, described below) which is the one
+to demo, and the original **Streamlit** prototype (`app.py`) with five tabs:
 Overview, Run Evaluation, Reliability Scorecard, Regression Tracker, and
 Scenario Bank.
 
@@ -136,7 +138,7 @@ vendor**. `LLM_PROVIDER` in `.env` selects the backend:
 
 | `LLM_PROVIDER` | Cost | Key from | Default agent model |
 |---|---|---|---|
-| `groq` | free tier | [console.groq.com/keys](https://console.groq.com/keys) | `llama-3.3-70b-versatile` |
+| `groq` | free tier | [console.groq.com/keys](https://console.groq.com/keys) | `openai/gpt-oss-120b` |
 | `gemini` | free tier | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `gemini-2.0-flash` |
 | `openrouter` | free models | [openrouter.ai/keys](https://openrouter.ai/keys) | `llama-3.3-70b-instruct:free` |
 | `ollama` | free, fully local | no key needed | `llama3.1` |
@@ -197,41 +199,68 @@ developed against, not to stand in for the engine's output.
 For real numbers you need a provider key - see below. On a free tier that
 costs nothing, so demo mode is only a fallback for when you have no key at all.
 
-## Deploying a live link (Streamlit Community Cloud, free, ~5 min)
+## Deploying a live link (free)
 
-For a hosted demo link, this is the fastest path:
+Two options, depending on which UI you want people to land on.
 
-1. Push this repo to GitHub (public, or private with Streamlit given access).
-2. Go to [share.streamlit.io](https://share.streamlit.io), sign in with GitHub.
-3. "New app" → select this repo → main file path `app.py`.
-4. Under **Advanced settings → Secrets**, add:
+### The dashboard (recommended) — Render, free tier
+
+The repo ships a [`render.yaml`](render.yaml) blueprint, so this is mostly clicks:
+
+1. Push this repo to GitHub (public, or private with Render granted access).
+2. On [render.com](https://render.com), **New → Blueprint**, select this repo.
+3. Render reads `render.yaml` and asks for `GROQ_API_KEY` — paste it there.
+   It is stored by Render, never committed to the repo.
+4. Deploy. You get a public `*.onrender.com` URL.
+
+Three things to know about the free tier before you share the link:
+
+- **Cold starts.** The service sleeps after inactivity and takes tens of seconds
+  to wake. A judge clicking a cold link sees a blank tab first. Hit the URL
+  yourself a minute before anyone else does.
+- **Run history is ephemeral.** `data/runs.db` lives on the container's disk,
+  which resets on redeploy and restart, so the Regression Tracker starts empty.
+  For a persistent tracker you'd attach a Render disk (paid) or swap SQLite for
+  a hosted Postgres.
+- **Your free LLM quota is public.** Anyone with the link can trigger runs
+  against your Groq key and exhaust the rate limit. For a submission link that
+  is usually fine; if you'd rather not risk it, deploy without a key set — the
+  dashboard falls back to demo mode automatically and stays fully explorable.
+
+### The Streamlit prototype — Streamlit Community Cloud
+
+1. [share.streamlit.io](https://share.streamlit.io) → sign in with GitHub.
+2. "New app" → select this repo → main file path `app.py`.
+3. Under **Advanced settings → Secrets**, add:
    ```toml
-   ANTHROPIC_API_KEY = "sk-ant-..."
-   AGENT_MODEL = "claude-sonnet-5"
-   JUDGE_MODEL = "claude-haiku-4-5-20251001"
+   LLM_PROVIDER = "groq"
+   GROQ_API_KEY = "gsk_..."
+   AGENT_MODEL = "openai/gpt-oss-120b"
+   JUDGE_MODEL = "openai/gpt-oss-120b"
    ```
-5. Deploy. You'll get a public `*.streamlit.app` URL to put in your submission.
+4. Deploy for a public `*.streamlit.app` URL.
 
-**Cost note:** every live run makes real Anthropic API calls (1 target-agent
-call chain + 1 judge call per scenario). Keep an eye on usage if the link is
-public and reachable by anyone — consider setting a low scenario-count
-default, or swapping in `AGENT_MODEL=claude-haiku-4-5-20251001` for the
-public demo to keep costs predictable.
+**Cost note:** on a free provider tier the exposure is rate limits, not money.
+On `LLM_PROVIDER=anthropic` every run makes billable calls — don't leave that
+configuration on a public link.
 
 ## Demo flow (suggested)
 
-1. **Overview tab** — explain the problem and architecture.
-2. **Scenario Bank tab** — show the adversarial scenarios (prompt injection,
-   social engineering, loop bait).
-3. **Run Evaluation tab** — run `v1_baseline` against the full scenario bank
-   live. Expand a couple of failed scenarios (especially
-   `S05_prompt_injection_transfer` or `S04_social_engineering_destructive`)
-   to show the agent getting socially engineered into an unsafe action.
-4. **Reliability Scorecard tab** — show the score and failure-mode breakdown.
-5. **Run again** with `v2_guarded` — show the score improve.
-6. **Regression Tracker tab** — show both runs plotted, proving the safety
-   prompt change measurably improved reliability. This is the "continuous
-   integration for agents" payoff.
+Demo the **web dashboard** (`uvicorn server:app`) — the red-team chat only
+exists there. Full shot list with timings: [`demo_script.md`](demo_script.md).
+
+1. **Scenarios** — show the adversarial vectors (prompt injection, social
+   engineering, loop bait); read one aloud.
+2. **Runs** — run `v1_baseline` live, then expand a failed scenario
+   (`S05_prompt_injection_transfer` or `S04_social_engineering_destructive`)
+   to show the agent talked into an unsafe action, with the exact tool call
+   and the deterministic rule that caught it.
+3. **Red Teaming** — the headline. Launch an adaptive attack and let the
+   attacker-vs-target transcript play out, then show the verdict.
+4. **Analytics** — run `v2_guarded`, then compare. Report what the tracker
+   actually shows rather than a scripted improvement: on a free-tier model the
+   guarded prompt fixed the failure it targeted and regressed a different one,
+   which is a sharper argument for regression testing than a clean win.
 
 ## Design decisions & known limitations
 
@@ -266,9 +295,9 @@ OpenAI-compatible free tier (Groq, Gemini, OpenRouter, local Ollama) through
 
 ## Authors
 
-_Add authors here._
+- **Ujjawal Srivastava** — team leader
+- **Vedant Pandey** — team member
 
 ## License
 
-MIT (or your team's preference) — add a `LICENSE` file before submitting if
-you need one.
+MIT — see [`LICENSE`](LICENSE).

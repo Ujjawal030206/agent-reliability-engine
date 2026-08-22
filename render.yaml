@@ -1,0 +1,26 @@
+# Render blueprint for the FastAPI dashboard.
+#
+# Deploy: push to GitHub, then on render.com choose New > Blueprint and point
+# it at this repo. Render reads this file and provisions the service.
+#
+# GROQ_API_KEY is marked sync:false, so Render prompts for it in the dashboard
+# instead of reading it from the repo - the key is never committed.
+
+services:
+  - type: web
+    name: agent-reliability-engine
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: LLM_PROVIDER
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false          # set this in the Render dashboard
+      - key: AGENT_MODEL
+        value: openai/gpt-oss-120b
+      - key: JUDGE_MODEL
+        value: openai/gpt-oss-120b
+      - key: PYTHON_VERSION
+        value: "3.12"
