@@ -211,6 +211,9 @@ The repo ships a [`render.yaml`](render.yaml) blueprint, so this is mostly click
 
 1. Push this repo to GitHub (public, or private with Render granted access).
 2. On [render.com](https://render.com), **New → Blueprint**, select this repo.
+   The blueprint installs [`requirements-server.txt`](requirements-server.txt) —
+   the dashboard's runtime deps only, without Streamlit/pandas — so the build
+   stays small.
 3. Render reads `render.yaml` and asks for `GROQ_API_KEY` — paste it there.
    It is stored by Render, never committed to the repo.
 4. Deploy. You get a public `*.onrender.com` URL.

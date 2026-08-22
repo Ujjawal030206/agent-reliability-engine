@@ -11,7 +11,7 @@ services:
     name: agent-reliability-engine
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements-server.txt
     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: LLM_PROVIDER
