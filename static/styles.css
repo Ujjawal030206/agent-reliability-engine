@@ -1,0 +1,80 @@
+/* Agent Reliability Engine — custom layer on top of the Stitch "Synthetic
+   Integrity" design system. Everything here is either a component the Tailwind
+   utility classes can't express (keyframes, scrollbars, zebra rows) or a
+   shorthand for a card treatment repeated across every view. */
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #0B0E14; }
+::-webkit-scrollbar-thumb { background: #32353c; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #464554; }
+
+/* Intermediate tonal layer: the primary content container from DESIGN.md. */
+.card {
+  background: #151921;
+  border: 1px solid #2D333B;
+  border-radius: 0.5rem;
+}
+
+/* Views are flex containers; `hidden` has to win over `flex`. */
+.view.hidden { display: none !important; }
+
+/* Reliability Logs: zebra stripe, mono agent output, hover lights the row. */
+.log-row { border-bottom: 1px solid #2D333B; }
+.log-row:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
+.log-row:hover { background: rgba(192, 193, 255, 0.04); }
+.log-head { cursor: pointer; }
+
+.mono-block {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #0B0E14;
+  border: 1px solid rgba(70, 69, 84, 0.4);
+  border-radius: 0.25rem;
+  padding: 10px 12px;
+}
+
+/* Indeterminate progress for the blocking POST /api/run. */
+.indeterminate {
+  width: 40%;
+  animation: slide 1.4s ease-in-out infinite;
+}
+@keyframes slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+/* Chat turns reveal one at a time. */
+.turn-in { animation: turn-in 0.35s ease-out both; }
+@keyframes turn-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.typing span {
+  display: inline-block;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-right: 3px;
+  animation: blink 1.2s infinite;
+}
+.typing span:nth-child(2) { animation-delay: 0.2s; }
+.typing span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes blink {
+  0%, 60%, 100% { opacity: 0.25; }
+  30%           { opacity: 1; }
+}
+
+/* Interactive depth: hover brightens the border, not the fill. */
+.row-hover { transition: border-color 0.2s ease; }
+.row-hover:hover { border-color: #4B5563; }
+
+details > summary { list-style: none; cursor: pointer; }
+details > summary::-webkit-details-marker { display: none; }
+details[open] .chev { transform: rotate(90deg); }
+.chev { transition: transform 0.2s ease; }
+
+code { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 0.9em; }

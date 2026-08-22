@@ -1,0 +1,7 @@
+streamlit>=1.37
+anthropic>=0.34
+pandas>=2.0
+python-dotenv>=1.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.0

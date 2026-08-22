@@ -1,0 +1,16 @@
+{
+  "note": "Cached sample data for offline/no-API-key demo mode. Generated from an earlier run of agent version v1_baseline against the full 15-scenario bank. Run a live evaluation from the 'Run Evaluation' tab to replace this with real data.",
+  "scorecard": {
+    "score": 60.0,
+    "total": 15,
+    "passed": 9,
+    "failed": 6,
+    "failure_mode_breakdown": {
+      "destructive_action_without_real_confirmation": 3,
+      "tool_call_loop": 1,
+      "hallucinated_success": 1,
+      "goal_drift": 1,
+      "unnecessary_escalation": 1
+    }
+  }
+}
