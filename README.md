@@ -81,14 +81,14 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# then edit .env and add your ANTHROPIC_API_KEY
+# then edit .env and fill in ONE provider block (Groq is free, no card)
 
 streamlit run app.py
 ```
 
 The app opens at `http://localhost:8501`.
 
-**No API key?** The app still runs — the Overview and Scenario Bank tabs
+**No key at all?** The app still runs — the Overview and Scenario Bank tabs
 work with no key, and the Reliability Scorecard tab falls back to cached
 sample data (`data/sample_run_results.json`) so the UI is fully explorable
 without live calls.
@@ -129,10 +129,55 @@ original Stitch export kept alongside it as `design/code.html`.
 > from CDNs, so the dashboard needs an internet connection to render as
 > designed. The API itself has no such dependency.
 
-### Demo mode (no API key, no spend)
+## LLM provider (free tiers supported)
 
-Every endpoint that evaluates anything calls Claude, so without an
-`ANTHROPIC_API_KEY` the dashboard has nothing real to render. **Demo mode**
+The engine needs a tool-calling LLM behind it, but it is **not tied to one
+vendor**. `LLM_PROVIDER` in `.env` selects the backend:
+
+| `LLM_PROVIDER` | Cost | Key from | Default agent model |
+|---|---|---|---|
+| `groq` | free tier | [console.groq.com/keys](https://console.groq.com/keys) | `llama-3.3-70b-versatile` |
+| `gemini` | free tier | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `gemini-2.0-flash` |
+| `openrouter` | free models | [openrouter.ai/keys](https://openrouter.ai/keys) | `llama-3.3-70b-instruct:free` |
+| `ollama` | free, fully local | no key needed | `llama3.1` |
+| `custom` | — | set `LLM_BASE_URL` | your choice |
+| `anthropic` | paid | [console.anthropic.com](https://console.anthropic.com) | `claude-sonnet-5` |
+
+Groq is the recommended free option — its free tier allows roughly 30 requests
+per minute and 1,000 per day, and a full 15-scenario run costs on the order of
+45 requests, so a demo session fits comfortably inside it. Rate limits change;
+check the provider's own docs.
+
+**Whichever model you pick must support tool/function calling** — the target
+agent under test is a tool-use agent, and the harness cannot evaluate it
+otherwise. Every default in the table does.
+
+### How it stays provider-agnostic
+
+`src/` is written against the Anthropic client surface: it calls
+`client.messages.create(...)` and reads `response.content` blocks and
+`response.stop_reason`. Rather than fork that tested logic per vendor,
+`llm_providers.py` supplies an object with the *same* surface backed by any
+OpenAI-compatible chat-completions endpoint, translating in both directions:
+
+- Anthropic `{name, description, input_schema}` tools → OpenAI function tools
+- tool-result blocks carried inside a user message → `role: "tool"` messages
+- OpenAI `tool_calls` + `finish_reason` → Anthropic-shaped content blocks and
+  `stop_reason`
+
+`server.py` hands the harness whichever client is configured, and **nothing in
+`src/` changes** — the tool-use loop, the mocked sandbox, the deterministic
+safety rules, the LLM judge, and the scorecard all run unmodified. Swapping
+providers is a `.env` edit.
+
+Smaller free models sometimes emit malformed tool-call arguments; the adapter
+degrades those to an empty call rather than crashing the run, so the trace still
+records the attempt.
+
+### Demo mode (no key at all)
+
+Every endpoint that evaluates anything calls an LLM, so with no provider
+configured the dashboard has nothing real to render. **Demo mode**
 fills that gap: it swaps in bundled fixtures from `static/demo/` so all four
 views are fully explorable — a v1 run scoring 33.3, a v2 run scoring 83.3 (so
 the Regression Tracker shows the improvement), a red-team attack that breaches
@@ -149,12 +194,8 @@ max-turns controls don't apply. Don't present it to anyone as a real
 evaluation result; it exists so the interface can be demonstrated and
 developed against, not to stand in for the engine's output.
 
-For real numbers you need a key. A full 15-scenario run is roughly one
-target-agent tool-use chain plus one judge call per scenario — on the default
-`claude-sonnet-5` agent + `claude-haiku-4-5` judge that lands in the region of
-a few tens of cents per run, and setting `AGENT_MODEL=claude-haiku-4-5` cuts it
-further. Actual cost depends on how many turns each scenario takes; check
-current rates at [anthropic.com/pricing](https://www.anthropic.com/pricing).
+For real numbers you need a provider key - see below. On a free tier that
+costs nothing, so demo mode is only a fallback for when you have no key at all.
 
 ## Deploying a live link (Streamlit Community Cloud, free, ~5 min)
 
@@ -219,8 +260,9 @@ public demo to keep costs predictable.
 ## Tech stack
 
 Python, FastAPI (JSON API + static dashboard), Streamlit (original UI),
-Anthropic API (Claude — both as the target agent and as the LLM-judge layer),
-SQLite, pandas. The dashboard is dependency-free HTML/CSS/JS over the API.
+SQLite, pandas. The LLM backend is pluggable — Anthropic, or any
+OpenAI-compatible free tier (Groq, Gemini, OpenRouter, local Ollama) through
+`llm_providers.py`. The dashboard is dependency-free HTML/CSS/JS over the API.
 
 ## Authors
 

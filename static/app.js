@@ -157,7 +157,10 @@ async function loadHealth() {
     const h = await api("/api/health");
     $("#health-dot").className =
       "inline-block w-1.5 h-1.5 rounded-full align-middle mr-1 " + (h.has_api_key ? "bg-[#7ee08a]" : "bg-error");
-    $("#health-label").textContent = h.has_api_key ? "API key loaded" : "no API key";
+    const llm = h.llm || {};
+    $("#health-label").textContent = h.has_api_key
+      ? `${llm.provider || "anthropic"} · ${llm.agent_model || "?"}`
+      : `${llm.provider || "anthropic"} · no key`;
     $("#key-banner").classList.toggle("hidden", !!h.has_api_key);
     $("#key-banner").classList.toggle("flex", !h.has_api_key);
     // With no key the live endpoints can only 400, so start in demo mode.

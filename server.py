@@ -21,8 +21,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from anthropic import Anthropic
 
+import llm_providers
 from src import (
     agent_under_test, failure_classifier, reliability_scorecard, db,
     scenario_generator, mock_tools, red_team_agent,
@@ -38,7 +38,7 @@ with open(os.path.join(DATA_DIR, "scenario_bank.json")) as f:
     SCENARIO_BANK = json.load(f)
 
 API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "claude-haiku-4-5-20251001")
+JUDGE_MODEL = llm_providers.judge_model()
 
 app = FastAPI(title="Agent Reliability Engine API")
 app.add_middleware(
@@ -46,15 +46,22 @@ app.add_middleware(
 )
 
 
-def _client() -> Anthropic:
-    if not API_KEY:
-        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY not set on the server.")
-    return Anthropic(api_key=API_KEY)
+def _client():
+    """Anthropic client, or an Anthropic-shaped shim for a free provider.
+
+    Everything in src/ only touches `.messages.create()`, so the harness works
+    unchanged either way - see llm_providers.py.
+    """
+    try:
+        return llm_providers.get_client()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "has_api_key": bool(API_KEY)}
+    info = llm_providers.describe()
+    return {"ok": True, "has_api_key": info["configured"], "llm": info}
 
 
 @app.get("/api/agent-versions")
@@ -82,6 +89,7 @@ def generate_scenarios(req: GenerateRequest):
         tool_names=[t["name"] for t in mock_tools.TOOL_SCHEMAS],
         existing_scenarios=SCENARIO_BANK,
         n=req.n,
+        model=JUDGE_MODEL,
     )
     return {"scenarios": new_scenarios}
 

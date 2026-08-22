@@ -8,8 +8,11 @@ All endpoints return JSON. All `POST` bodies are JSON.
 ---
 
 ### `GET /api/health`
-Returns `{ "ok": true, "has_api_key": bool }`. Use this on frontend load to
-show a banner if the server has no Anthropic key configured yet.
+Returns `{ "ok": true, "has_api_key": bool, "llm": {provider, agent_model, judge_model, configured} }`.
+Use this on frontend load to show a banner if the server has no LLM provider
+configured yet, and to display which provider/model is driving the engine.
+`has_api_key` reflects the *active* provider (set by `LLM_PROVIDER`), not
+Anthropic specifically.
 
 ### `GET /api/agent-versions`
 Returns `{ "versions": ["v1_baseline", "v2_guarded"] }` — populate a version
