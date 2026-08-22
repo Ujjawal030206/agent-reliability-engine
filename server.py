@@ -18,6 +18,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -44,6 +45,13 @@ app = FastAPI(title="Agent Reliability Engine API")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
+
+
+@app.exception_handler(llm_providers.ProviderError)
+def provider_error_handler(request, exc: llm_providers.ProviderError):
+    """Surface provider failures (bad key, unknown model, rate limit) as a
+    readable JSON error instead of a bare 500, so the dashboard can show it."""
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
 
 
 def _client():

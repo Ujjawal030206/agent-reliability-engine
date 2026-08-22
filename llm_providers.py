@@ -34,8 +34,8 @@ PRESETS = {
     "groq": {
         "base_url": "https://api.groq.com/openai/v1",
         "key_env": "GROQ_API_KEY",
-        "agent_model": "llama-3.3-70b-versatile",
-        "judge_model": "llama-3.1-8b-instant",
+        "agent_model": "openai/gpt-oss-120b",
+        "judge_model": "openai/gpt-oss-120b",
     },
     "gemini": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -164,6 +164,25 @@ def _tools_to_openai(tools):
     return out
 
 
+# Models that emit internal reasoning tokens, which count against max_tokens.
+_REASONING_HINTS = ("gpt-oss", "qwen3", "deepseek-r1", "o1-", "o3-", "-thinking")
+
+
+def _budget_for(model, max_tokens):
+    """Scale up max_tokens for reasoning models.
+
+    src/ budgets tokens for non-reasoning models (the judge asks for a verdict
+    in 300). A reasoning model spends most of that thinking before it writes a
+    character, so the JSON gets truncated and scored as a parse error. Giving
+    it headroom fixes the cause; the model still stops when it's done, so this
+    costs nothing on shorter replies.
+    """
+    name = (model or "").lower()
+    if any(hint in name for hint in _REASONING_HINTS):
+        return max(max_tokens * 4, 2048)
+    return max_tokens
+
+
 def _messages_to_openai(system, messages):
     """Flatten Anthropic content blocks into the OpenAI message sequence.
 
@@ -258,6 +277,20 @@ def _response_from_openai(completion):
 # The shim client
 # --------------------------------------------------------------------------
 
+class ProviderError(Exception):
+    """A provider-side failure (bad key, unknown model, rate limit, outage).
+
+    Raised from inside the shim so it propagates cleanly up through the
+    untouched src/ harness; server.py turns it into a JSON error response
+    instead of a bare 500, so the dashboard can show what actually went wrong.
+    """
+
+    def __init__(self, message, status_code=502):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+
 class _Messages:
     def __init__(self, client, fallback_model):
         self._client = client
@@ -271,15 +304,59 @@ class _Messages:
 
         request = {
             "model": model,
-            "max_tokens": max_tokens,
+            "max_tokens": _budget_for(model, max_tokens),
             "messages": _messages_to_openai(system, messages or []),
         }
         if tools:
             request["tools"] = _tools_to_openai(tools)
             request["tool_choice"] = "auto"
 
-        completion = self._client.chat.completions.create(**request)
+        # NOTE: response_format={"type": "json_object"} looks like the obvious fix
+        # for judges that wrap their JSON in prose, but it is a trap here. When a
+        # reasoning model spends its whole budget thinking and returns empty
+        # content, JSON mode fails the *request* with a 400 - aborting the entire
+        # evaluation. Without it, the same event costs one scenario a
+        # judge_output_parse_error and the run completes. Soft failure wins.
+
+        try:
+            completion = self._client.chat.completions.create(**request)
+        except Exception as exc:
+            raise _as_provider_error(exc, model) from exc
         return _response_from_openai(completion)
+
+
+def _as_provider_error(exc, model):
+    """Turn an SDK exception into a ProviderError with an actionable message."""
+    status = getattr(exc, "status_code", None)
+    detail = ""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            detail = err.get("message") or ""
+        elif isinstance(err, str):
+            detail = err
+    detail = detail or str(exc)
+    provider = provider_name()
+
+    if status == 401:
+        return ProviderError(
+            f"{provider} rejected the API key (401). Check the key in .env and restart the server.",
+            status_code=400,
+        )
+    if status == 404 and "model" in detail.lower():
+        return ProviderError(
+            f"{provider} has no model '{model}' ({detail}). Update AGENT_MODEL / JUDGE_MODEL "
+            f"in .env to a model this provider currently serves.",
+            status_code=400,
+        )
+    if status == 429:
+        return ProviderError(
+            f"{provider} rate limit hit ({detail}). Free tiers cap requests per minute - "
+            f"wait a moment, or run fewer scenarios per evaluation.",
+            status_code=429,
+        )
+    return ProviderError(f"{provider} request failed: {detail}", status_code=502)
 
 
 class OpenAICompatClient:
@@ -293,7 +370,16 @@ class OpenAICompatClient:
                 "The 'openai' package is required for non-Anthropic providers. "
                 "Run: pip install -r requirements.txt"
             ) from exc
-        self._client = OpenAI(base_url=base_url, api_key=api_key)
+        # Free tiers throttle aggressively - Groq caps tokens-per-minute, not
+        # just requests - and a 15-scenario run sends growing conversation
+        # history. The SDK honours Retry-After on 429, so give it enough
+        # attempts to ride out a TPM window instead of failing the whole run.
+        self._client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            max_retries=int(os.environ.get("LLM_MAX_RETRIES", "8")),
+            timeout=float(os.environ.get("LLM_TIMEOUT", "120")),
+        )
         self.messages = _Messages(self._client, fallback_model)
 
 
