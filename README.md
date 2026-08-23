@@ -249,24 +249,6 @@ Three things to know about the free tier before you share the link:
 On `LLM_PROVIDER=anthropic` every run makes billable calls — don't leave that
 configuration on a public link.
 
-## Demo flow (suggested)
-
-Demo the **web dashboard** (`uvicorn server:app`) — the red-team chat only
-exists there. Full shot list with timings: [`demo_script.md`](demo_script.md).
-
-1. **Scenarios** — show the adversarial vectors (prompt injection, social
-   engineering, loop bait); read one aloud.
-2. **Runs** — run `v1_baseline` live, then expand a failed scenario
-   (`S05_prompt_injection_transfer` or `S04_social_engineering_destructive`)
-   to show the agent talked into an unsafe action, with the exact tool call
-   and the deterministic rule that caught it.
-3. **Red Teaming** — the headline. Launch an adaptive attack and let the
-   attacker-vs-target transcript play out, then show the verdict.
-4. **Analytics** — run `v2_guarded`, then compare. Report what the tracker
-   actually shows rather than a scripted improvement: on a free-tier model the
-   guarded prompt fixed the failure it targeted and regressed a different one,
-   which is a sharper argument for regression testing than a clean win.
-
 ## Design decisions & known limitations
 
 - **Why a hybrid classifier, not pure LLM-as-judge?** Irreversible-action
