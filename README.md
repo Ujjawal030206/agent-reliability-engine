@@ -282,8 +282,7 @@ OpenAI-compatible free tier (Groq, Gemini, OpenRouter, local Ollama) through
 
 ## Authors
 
-- **Ujjawal Srivastava** — team leader
-- **Vedant Pandey** — team member
+- **Ujjawal Srivastava**
 
 ## License
 
