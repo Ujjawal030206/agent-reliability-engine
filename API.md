@@ -53,11 +53,9 @@ Returns:
 ```
 This call runs synchronously and can take a while for a full 15-scenario
 run (each scenario = 1+ target-agent calls + 1 judge call). Show a loading
-state; don't expect it to return instantly. **If your frontend needs live
-per-scenario progress instead of one big blocking response, ask Claude Code
-to convert this into a Server-Sent Events (SSE) stream — the loop in
-`server.py`'s `run_evaluation` is already scenario-by-scenario, so it's a
-small change, not a rewrite.**
+state. The loop in `server.py`'s `run_evaluation` is scenario-by-scenario, so
+it can be converted to a Server-Sent Events (SSE) stream if live per-scenario
+progress is needed.
 
 ### `POST /api/redteam`
 Body: `{ "agent_version": "v1_baseline", "goal": "get an unconfirmed refund processed", "max_turns": 5 }`
@@ -73,9 +71,8 @@ Returns:
   "classification": {"verdict": "pass"|"fail", "failure_modes": [...], "judge_explanation": "..."}
 }
 ```
-This is the headline feature — render `transcript.turns` as an actual
-back-and-forth chat (attacker vs. target), ideally revealed turn by turn for
-dramatic effect on camera, then show the verdict.
+Render `transcript.turns` as a back-and-forth conversation (attacker vs.
+target), then show the verdict.
 
 ### `GET /api/runs`
 Returns `{ "runs": [ {run_id, agent_version, timestamp, score, total_scenarios, passed, failed}, ... ] }`
@@ -94,5 +91,60 @@ cp .env.example .env   # add your ANTHROPIC_API_KEY
 uvicorn server:app --reload --port 8000
 ```
 
-Drop your Stitch export (`index.html` + its CSS/JS assets) into `./static/`
-— it's served automatically at `/`, and `/api/*` stays untouched alongside it.
+The dashboard in `./static/` is served at `/`, alongside `/api/*`.
+
+---
+
+## Customer Resolution Agent
+
+The resolution agent runs against a stateful sandbox (`src/shop_env.py`) and is
+graded by a deterministic verifier (`src/outcome_verifier.py`). No LLM judge is
+involved in these verdicts.
+
+### `GET /api/resolution/scenarios`
+Returns `{ "scenarios": [...], "agent_versions": ["v1_baseline", "v2_verified"] }`.
+Each scenario has `id`, `title`, `category`, `customer_message`, `events`
+(disruptions such as a stock sell-out or gateway timeout), `expect`, and
+`what_it_tests`.
+
+### `POST /api/resolution/run`
+Body: `{ "scenario_id": "R03_stock_sells_out_mid_case", "agent_version": "v2_verified" }`
+
+Returns `{ scenario, trace, verification }`:
+- `trace.steps[]`: one entry per tool call, with `decision` (what the agent said it
+  decided, or an excerpt of the model's own reasoning when it said nothing; see
+  `decision_source`), `tool`, `kind` (read / write / ask / verify / escalate), `input`,
+  `result`, `status` (ok / blocked / error), `adaptation`
+  (`{after_step, problem}` when the agent changed course after a failure or a
+  negative observation such as no stock),
+  `retry_of`, and `env_events` (world changes, with `visible_to_agent`).
+- `trace.final_text`, `trace.stop_reason` (`completed` / `loop_detected` /
+  `max_iterations`), `trace.case_file` (the task state the agent saw),
+  `trace.final_state` (the sandbox database at the end).
+- `verification`: `{ verdict, failure_modes[], findings[{mode, detail}], outcome }`
+  where `outcome` holds `resolution`, `total_refunded`, `refund_count`,
+  `replacements`, `escalated`, `adaptations`, `retries`, `steps`.
+
+`trace.steps` maps onto the sequence Goal (scenario message) ->
+Decision -> Action -> Intermediate Result -> Adaptation -> Final Outcome
+(`verification.outcome`).
+
+### `POST /api/resolution/eval`
+Body: `{ "agent_version": "v2_verified", "scenario_ids": null, "trials": 3 }`
+(`trials` is capped at 5.)
+
+Returns `{ run_id, agent_version, trials_per_scenario, summary, results[] }`.
+`summary` has `pass_rate`, `pass_hat_k` (share of scenarios that passed on
+every trial), `k`, and `failure_mode_breakdown`. The run is also saved to the
+run history as agent version `resolution/<version>`, so it appears in `GET /api/runs`
+and the Regression Tracker.
+
+### `GET /api/resolution/reports`
+Lists suite reports saved by `python run_resolution.py ... --save` in
+`data/traces/`, newest first: `{ "reports": [{name, agent_version,
+trials_per_scenario, scenarios, pass_rate, pass_hat_k, errors, aborted}] }`.
+
+### `GET /api/resolution/reports/{name}`
+Returns one saved report in the same shape as `POST /api/resolution/eval`.
+These are recordings of real runs; the dashboard labels them as recordings.
+`data/traces/` is gitignored, so a fresh deploy has none.

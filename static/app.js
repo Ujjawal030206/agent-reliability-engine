@@ -6,7 +6,12 @@
  *   GET  /api/scenarios        POST /api/scenarios/generate
  *   POST /api/run              GET  /api/runs        GET /api/runs/{run_id}
  *   POST /api/redteam
+ * The Resolution Agent view lives in resolution.js.
  */
+
+// Captured before showView() rewrites the hash, so views registered by later
+// scripts (resolution.js) can still honour a deep link like #resolution.
+const INITIAL_VIEW = (window.location.hash || "#scenarios").slice(1);
 
 const state = {
   scenarios: [],
@@ -136,10 +141,13 @@ function showView(name) {
     a.classList.toggle("text-on-surface-variant", !active);
   });
 
-  // The header "Run Evaluation" button is the wrong verb on the red-team view.
-  $("#btn-header-run").classList.toggle("hidden", name === "redteam");
+  // The header "Run Evaluation" button is the wrong verb on the red-team view, and the
+  // resolution view has its own agent versions and run controls.
+  $("#btn-header-run").classList.toggle("hidden", name === "redteam" || name === "resolution");
+  $$(".engine-version-control").forEach((el) => el.classList.toggle("hidden", name === "resolution"));
 
   if (name === "analytics") loadRuns();
+  if (name === "resolution" && typeof rsLoadReports === "function") rsLoadReports();
   if (window.location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
 }
 
@@ -874,7 +882,7 @@ $("#rt-chat").innerHTML = `
     Set a goal and launch — the transcript replays here, attacker vs. target.</p>
   </div>`;
 
-showView((window.location.hash || "#scenarios").slice(1));
+showView(INITIAL_VIEW);
 loadHealth();
 loadVersions();
 loadScenarios();

@@ -1,33 +1,138 @@
 # 🛡️ Agent Reliability Engine
-Live demo: https://agent-reliability-engine.onrender.com/
-*Agent infrastructure · testing · failure prediction*
 
-Continuous integration for autonomous agents. Point this at an AI agent,
-and it automatically generates realistic + adversarial test scenarios, runs
-the agent in a sandbox, classifies *why* it failed, and produces a reliability
-scorecard you can track across versions.
+*Autonomous agents · deterministic verification · reliability testing*
+
+**Live demo:** https://agent-reliability-engine.onrender.com/ (free tier; the first request may take a few seconds to wake the service)
+
+Tooling for building AI agents you can trust with real actions. The repository
+has two parts that share one provider-agnostic LLM layer:
+
+- **Customer Resolution Agent**: an autonomous agent that resolves customer
+  cases inside a stateful backend, adapts when conditions change mid-case, and
+  is graded by a deterministic verifier on what actually happened in the
+  database rather than on what it said.
+- **Reliability test harness**: continuous integration for agents. It
+  generates realistic and adversarial scenarios, runs the agent in a sandbox,
+  classifies *why* it failed, red-teams it with an adaptive attacker, and tracks
+  a reliability score across versions.
+
+**Quick check, no API key needed:**
+
+```bash
+pip install -r requirements.txt
+python -m unittest discover -s tests
+```
 
 ---
 
 ## Why this matters
 
-Industry benchmarks report autonomous agents failing on the majority of
-real-world tasks they attempt. Most teams still ship agents against a
-handful of hand-written happy-path prompts, so real failure modes —
-tool-call loops, hallucinated confidence, unsafe destructive actions under
-social pressure, silent goal drift — only surface after deployment, on real
-users, with real consequences.
+Autonomous agents fail on a large share of real-world tasks, and the costly
+failures are actions, not wording: refunding a customer twice, acting on the
+wrong account, taking a destructive step under social pressure, or reporting a
+task as done when the backend shows otherwise. Most agents still ship against a
+handful of happy-path prompts, so these failures surface only in production.
 
 This project treats agent reliability the way software engineering treats
-correctness: as something you test *before* you ship, automatically, on
-every change.
+correctness: verified against ground truth, tested automatically, on every
+change.
 
-## How it works
+## Customer Resolution Agent
+
+An agent that resolves customer issues (replacements, refunds, cancellations,
+escalations) in a simulated enterprise backend whose state changes while the
+case is open.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    C[Customer request] --> A[Resolution agent<br/>LLM + case file]
+    A -->|tool calls| E[(ShopFast sandbox<br/>orders, stock, refund ledger,<br/>policy engine)]
+    E -->|results, blocks, errors| A
+    S[Scenario events<br/>stock sell-out, gateway timeout,<br/>policy change, outage] -.-> E
+    A --> T[Trace<br/>Goal, Decision, Action,<br/>Result, Adaptation, Outcome]
+    E -->|final database| V[Deterministic verifier]
+    T --> V
+    V --> R[pass^k report]
+    R --> H[Self-hardening loop]
+    H -->|rule kept only if it fixes<br/>a scenario and breaks none| A
+```
+
+### Components
+
+- **Stateful sandbox** (`src/shop_env.py`): customers, orders, stock, a refund
+  ledger, replacements, cancellations and escalations in an in-memory SQLite
+  database, exposed through 11 tools. Every state-changing tool writes to it,
+  and the backend enforces policy itself (return window, refund limit, stock,
+  cancellation rules).
+- **Scenario events**: each scenario can change the world under the agent.
+  Stock sells out after the agent has checked it, a refund times out after it
+  has committed, the refund limit is lowered mid-case, an order ships just
+  before cancellation, a service fails transiently.
+- **Resolution agent** (`src/resolution_agent.py`): an LLM tool-use loop with
+  a harness-maintained case file (facts, policy seen, customer answers, actions,
+  blockers, verifications) shown to the model on every call as persistent task
+  state. Each step is traced as Goal, Decision, Action, Intermediate result,
+  Adaptation and Final outcome, with adaptations and retries marked.
+- **Deterministic verifier** (`src/outcome_verifier.py`): reads the final
+  database and the recorded tool calls, with no LLM judge. It fails duplicate
+  refunds, actions without customer consent, actions on another customer's
+  order, unverified completions, false completion claims, loops, wrong
+  resolutions, wrong refund totals, and missing or unnecessary escalations.
+- **pass^k evaluation** (`src/resolution_eval.py`): runs each scenario k times
+  and reports the share of scenarios that passed every trial. Provider errors
+  are retried once and recorded separately from agent failures.
+- **Self-hardening loop** (`src/hardening_loop.py`): runs the suite, gives the
+  verifier's findings to a patcher model that proposes one general rule,
+  re-runs the whole suite with that rule, and keeps it only if at least one
+  scenario newly passes and none regresses. The model proposes changes; a set
+  comparison decides.
+
+Two agent versions, `v1_baseline` and `v2_verified`, make the effect of the
+operating procedure measurable. The 12 scenarios are defined in
+`data/resolution_scenarios.json`.
+
+### Usage
+
+```bash
+python run_resolution.py --list
+python run_resolution.py R03                          # one scenario, full trace
+python run_resolution.py --all --trials 3 --save      # pass^3 over the suite
+python harden_agent.py --from v1_baseline --rounds 3 --save
+python harden_agent.py R02 R10 --rounds 2             # a cheaper subset
+```
+
+`--save` writes reports to `data/traces/`; the dashboard can replay them
+without spending model quota again.
+
+### Results
+
+Live runs on Groq's free tier, one trial per scenario (13 Sept 2026), agent
+model `openai/gpt-oss-120b`:
+
+| Agent | Completed | Passed | Failed |
+|---|---|---|---|
+| `v2_verified` | 12 / 12 | 12 | none |
+| `v1_baseline` | 6 / 12 | 4 | R03 (stopped without resolving), R06 (never escalated the warranty claim) |
+
+The `v1_baseline` run stopped when the model's 200K tokens/day free-tier limit
+was reached; R07 to R12 have not yet been run on it.
+
+Self-hardening, `v1_baseline` on `openai/gpt-oss-20b` (20b also proposing
+rules), R03 and R06, one round: the baseline passed 0 of 2. The loop proposed
+"confirm the updated state with verify_resolution before the final confirmation
+message", which fixed R03 with no regressions (1 of 2). R06 still fails.
+
+These are single trials on small samples. Agents are nondeterministic, so run
+`--trials 3` before treating any difference as settled.
+
+## Reliability test harness
 
 ```mermaid
 flowchart LR
     A[Scenario Bank<br/>15 realistic + adversarial prompts] --> B[Sandboxed Execution Harness]
-    B --> C[Target Agent Under Test<br/>'Riley' — ShopFast support agent]
+    B --> C[Target Agent Under Test<br/>'Riley', ShopFast support agent]
     C -->|mocked tool calls, fully logged| B
     B --> D[Failure Mode Classifier]
     D --> D1[Deterministic safety rules<br/>irreversible action w/o real consent,<br/>tool-call loops, hallucinated success]
@@ -37,46 +142,70 @@ flowchart LR
     E --> F[Regression Tracker<br/>SQLite run history across versions]
 ```
 
-1. **Scenario Bank + Generation Engine** (`data/scenario_bank.json`,
-   `src/scenario_generator.py`) — 15 curated scenarios spanning: normal
-   requests, ambiguous/unconfirmed requests, social engineering toward
+1. **Scenario Bank and Generation Engine** (`data/scenario_bank.json`,
+   `src/scenario_generator.py`): 15 curated scenarios spanning normal
+   requests, ambiguous or unconfirmed requests, social engineering toward
    destructive actions, prompt injection (including fake "system override"
-   messages), loop-inducing tasks, and hallucination bait — plus a live
-   Scenario Generation Engine (Scenario Bank tab → "Generate") that asks
-   Claude to synthesize *new* adversarial scenarios targeting the agent's
-   actual tools, deduplicated against what already exists, and feeds them
-   straight into the run pool.
-2. **Target Agent Under Test** (`src/agent_under_test.py`) — "Riley," a small
-   customer-support agent for a fictional shop (ShopFast), with real
-   Anthropic tool-use across 6 tools (order lookup, refund, email,
-   escalation, account deletion, fund transfer). Two system-prompt versions
-   (`v1_baseline`, `v2_guarded`) are included so you can demo the regression
-   tracker by comparing reliability before/after a safety-focused prompt
-   change.
-3. **Sandboxed Execution Harness** (`src/mock_tools.py`) — every tool is
-   mocked and logged. Destructive tools only "succeed" if called with
-   `confirmed=true`; nothing ever touches a real system.
-4. **Failure Mode Classifier** (`src/failure_classifier.py`) — hybrid:
-   deterministic rules catch the non-negotiable safety failures, an
-   LLM-as-judge (Claude) catches the softer, contextual ones. A rule
-   violation always fails the scenario regardless of what the judge says.
-5. **Reliability Scorecard & Regression Tracker** (`src/reliability_scorecard.py`,
-   `src/db.py`) — aggregates pass/fail into a 0–100 score with a failure-mode
-   breakdown, and stores every run in SQLite so scores can be tracked across
-   agent versions over time.
+   messages), loop-inducing tasks and hallucination bait, plus a generator that
+   synthesizes new adversarial scenarios targeting the agent's actual tools,
+   deduplicated against the existing bank.
+2. **Target Agent Under Test** (`src/agent_under_test.py`): "Riley", a
+   customer-support agent for a fictional shop with 6 tools (order lookup,
+   refund, email, escalation, account deletion, fund transfer). Two prompt
+   versions (`v1_baseline`, `v2_guarded`) allow before-and-after comparison of
+   a safety-focused change.
+3. **Sandboxed Execution Harness** (`src/mock_tools.py`): every tool is mocked
+   and logged. Destructive tools only succeed when called with
+   `confirmed=true`; nothing touches a real system.
+4. **Failure Mode Classifier** (`src/failure_classifier.py`): deterministic
+   rules catch non-negotiable safety failures, and an LLM-as-judge catches the
+   softer, contextual ones. A rule violation always fails the scenario,
+   regardless of the judge's opinion.
+5. **Adaptive red team** (`src/red_team_agent.py`): an attacker model converses
+   with the target agent and changes approach turn by turn based on its
+   replies, rather than firing one scripted prompt.
+6. **Reliability Scorecard and Regression Tracker**
+   (`src/reliability_scorecard.py`, `src/db.py`): aggregates results into a
+   0 to 100 score with a failure-mode breakdown and stores every run in SQLite
+   so scores can be tracked across agent versions.
 
-Two front ends sit on top of this, both driving the same engine: the
-**web dashboard** (`server.py` + `static/`, described below) which is the one
-to demo, and the original **Streamlit** prototype (`app.py`) with five tabs:
-Overview, Run Evaluation, Reliability Scorecard, Regression Tracker, and
-Scenario Bank.
+## Web dashboard
 
-## Setup & run locally
+```bash
+uvicorn server:app --reload --port 8000
+```
+
+Open `http://localhost:8000`. The dashboard has five views:
+
+- **Resolution Agent**: runs a resolution case live and replays it step by
+  step, including injected world changes and the verifier's findings. It runs
+  the full suite with pass^k and loads saved reports from `data/traces/`.
+- **Scenarios**: the curated bank, filterable by category, with selection for
+  the next run and a scenario generator.
+- **Runs**: runs an evaluation for the selected agent version and renders the
+  reliability score, failure-mode breakdown and expandable per-scenario traces.
+- **Analytics**: the Regression Tracker, with score per run over time and one
+  series per agent version.
+- **Red Teaming**: runs the adaptive attacker and replays the attacker-versus-
+  target transcript turn by turn, followed by the verdict.
+
+The frontend is plain HTML/CSS/JS in `static/`, with no build step. It talks
+only to the API documented in [`API.md`](API.md); all evaluation logic lives
+in `src/`. The design system is described in `design/DESIGN.md`.
+
+Tailwind and the Geist, JetBrains Mono and Material Symbols fonts are bundled
+in `static/vendor/` (licenses in `static/vendor/NOTICE.md`), so the dashboard
+works fully offline. Refresh them with `python scripts/vendor_assets.py`.
+
+A Streamlit interface for the test harness is also included (`app.py`,
+`streamlit run app.py`).
+
+## Setup
 
 Requires Python 3.10+.
 
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/Ujjawal030206/agent-reliability-engine.git
 cd agent-reliability-engine
 
 python -m venv .venv
@@ -85,58 +214,17 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# then edit .env and fill in ONE provider block (Groq is free, no card)
-
-streamlit run app.py
+# then edit .env and fill in ONE provider block
 ```
 
-The app opens at `http://localhost:8501`.
+The test suite (`python -m unittest discover -s tests`) needs no key: it
+exercises the sandbox, agent loop, verifier and hardening gate with a scripted
+model client.
 
-**No key at all?** The app still runs — the Overview and Scenario Bank tabs
-work with no key, and the Reliability Scorecard tab falls back to cached
-sample data (`data/sample_run_results.json`) so the UI is fully explorable
-without live calls.
+## LLM providers
 
-## Web dashboard (FastAPI + Stitch frontend)
-
-The same engine is also exposed as a JSON API with a purpose-built dashboard
-in front of it — this is the version to demo.
-
-```bash
-uvicorn server:app --reload --port 8000
-```
-
-Then open `http://localhost:8000`. The dashboard has four views:
-
-- **Scenarios** — the curated bank from `data/scenario_bank.json`, filterable
-  by category, with checkboxes that select the exact subset for the next run.
-  The Scenario Generation Engine (`POST /api/scenarios/generate`) synthesizes
-  new adversarial vectors and previews them here.
-- **Runs** — fires `POST /api/run` for the selected agent version, then renders
-  the reliability score, the failure-mode breakdown, and per-scenario logs you
-  can expand into the full trace: agent response, every mocked tool call with
-  its result, deterministic rule findings, and the LLM judge's explanation.
-- **Analytics** — the Regression Tracker: score per run over time, one colored
-  series per agent version, so a `v1_baseline` → `v2_guarded` improvement is
-  visible as a step up.
-- **Red Teaming** — the headline feature. `POST /api/redteam` runs the adaptive
-  attacker against the target agent, and the transcript replays turn by turn as
-  a live attacker-vs-target chat, followed by the verdict.
-
-The frontend is plain HTML/CSS/JS in `static/` — no build step, no framework.
-It talks to the API documented in `API.md` and nothing else; all the evaluation
-logic stays in `src/`. The visual design system it implements (colors,
-typography, spacing, component rules) is in `design/DESIGN.md`, with the
-original Stitch export kept alongside it as `design/code.html`.
-
-> Tailwind and the Geist / JetBrains Mono / Material Symbols fonts are loaded
-> from CDNs, so the dashboard needs an internet connection to render as
-> designed. The API itself has no such dependency.
-
-## LLM provider (free tiers supported)
-
-The engine needs a tool-calling LLM behind it, but it is **not tied to one
-vendor**. `LLM_PROVIDER` in `.env` selects the backend:
+The engine needs a tool-calling LLM but is not tied to one vendor.
+`LLM_PROVIDER` in `.env` selects the backend:
 
 | `LLM_PROVIDER` | Cost | Key from | Default agent model |
 |---|---|---|---|
@@ -144,146 +232,120 @@ vendor**. `LLM_PROVIDER` in `.env` selects the backend:
 | `gemini` | free tier | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `gemini-2.0-flash` |
 | `openrouter` | free models | [openrouter.ai/keys](https://openrouter.ai/keys) | `llama-3.3-70b-instruct:free` |
 | `ollama` | free, fully local | no key needed | `llama3.1` |
-| `custom` | — | set `LLM_BASE_URL` | your choice |
+| `custom` | varies | set `LLM_BASE_URL` | your choice |
 | `anthropic` | paid | [console.anthropic.com](https://console.anthropic.com) | `claude-sonnet-5` |
 
-Groq is the recommended free option — its free tier allows roughly 30 requests
-per minute and 1,000 per day, and a full 15-scenario run costs on the order of
-45 requests, so a demo session fits comfortably inside it. Rate limits change;
-check the provider's own docs.
-
-**Whichever model you pick must support tool/function calling** — the target
-agent under test is a tool-use agent, and the harness cannot evaluate it
-otherwise. Every default in the table does.
+**The model must support tool calling.** Every default in the table does.
+Free tiers have tight limits: a full 12-scenario resolution suite uses most of
+a model's daily token budget on Groq's free tier, so plan larger runs
+accordingly. Limits change; check each provider's documentation.
 
 ### How it stays provider-agnostic
 
-`src/` is written against the Anthropic client surface: it calls
-`client.messages.create(...)` and reads `response.content` blocks and
-`response.stop_reason`. Rather than fork that tested logic per vendor,
-`llm_providers.py` supplies an object with the *same* surface backed by any
-OpenAI-compatible chat-completions endpoint, translating in both directions:
+`src/` is written against the Anthropic client surface
+(`client.messages.create(...)`, `response.content` blocks,
+`response.stop_reason`). `llm_providers.py` supplies an object with the same
+surface backed by any OpenAI-compatible chat-completions endpoint, translating
+in both directions:
 
-- Anthropic `{name, description, input_schema}` tools → OpenAI function tools
-- tool-result blocks carried inside a user message → `role: "tool"` messages
-- OpenAI `tool_calls` + `finish_reason` → Anthropic-shaped content blocks and
-  `stop_reason`
+- Anthropic `{name, description, input_schema}` tools to OpenAI function tools
+- tool-result blocks inside a user message to `role: "tool"` messages
+- OpenAI `tool_calls` and `finish_reason` back to Anthropic-shaped content
+  blocks and `stop_reason`, keeping a reasoning model's reasoning on the side so
+  it can be shown in traces without becoming the agent's reply
 
-`server.py` hands the harness whichever client is configured, and **nothing in
-`src/` changes** — the tool-use loop, the mocked sandbox, the deterministic
-safety rules, the LLM judge, and the scorecard all run unmodified. Swapping
-providers is a `.env` edit.
+Swapping providers is a `.env` edit. Malformed tool-call arguments from smaller
+models degrade to an empty call instead of crashing the run.
 
-Smaller free models sometimes emit malformed tool-call arguments; the adapter
-degrades those to an empty call rather than crashing the run, so the trace still
-records the attempt.
+### Demo mode (test harness views, no key)
 
-### Demo mode (no key at all)
+With no provider configured, the Scenarios, Runs, Analytics and Red Teaming
+views can render bundled sample data from `static/demo/`, clearly labelled as
+such everywhere it appears. **This data is hand-authored, not measured**, and
+exists so the interface can be explored and developed against. It never applies
+to the Resolution Agent view, which only shows live runs or saved reports of
+real runs.
 
-Every endpoint that evaluates anything calls an LLM, so with no provider
-configured the dashboard has nothing real to render. **Demo mode**
-fills that gap: it swaps in bundled fixtures from `static/demo/` so all four
-views are fully explorable — a v1 run scoring 33.3, a v2 run scoring 83.3 (so
-the Regression Tracker shows the improvement), a red-team attack that breaches
-`v1_baseline`, and one that `v2_guarded` holds off.
+## Deployment
 
-It turns on automatically when `/api/health` reports no key, and there's a
-**Demo mode** toggle in the header to switch it off once you have one.
+The repository includes a [`render.yaml`](render.yaml) blueprint for Render:
 
-**This data is canned, not measured.** It is hand-authored to match the shapes
-in `API.md` — no agent was actually tested to produce it. The UI says so
-everywhere it appears: a persistent banner, a `demo data` badge on every
-scorecard, history row, and verdict, and an explicit note that the goal and
-max-turns controls don't apply. Don't present it to anyone as a real
-evaluation result; it exists so the interface can be demonstrated and
-developed against, not to stand in for the engine's output.
+1. On [render.com](https://render.com), choose **New → Blueprint** and select
+   this repository. The blueprint installs
+   [`requirements-server.txt`](requirements-server.txt), the dashboard's runtime
+   dependencies only.
+2. Provide `GROQ_API_KEY` when prompted. It is stored by Render and never
+   committed.
+3. Deploy to get a public `*.onrender.com` URL.
 
-For real numbers you need a provider key - see below. On a free tier that
-costs nothing, so demo mode is only a fallback for when you have no key at all.
+Notes for the free tier:
 
-## Deploying a live link (free)
+- **Cold starts.** The service sleeps when idle and takes tens of seconds to
+  wake on the first request.
+- **Ephemeral storage.** `data/runs.db` and `data/traces/` reset on redeploy or
+  restart. Attach a persistent disk or use hosted Postgres for durable history.
+- **Shared quota.** Anyone with the link can trigger runs against your provider
+  key. Add rate limiting or deploy without a key for a read-only preview.
 
-Two options, depending on which UI you want people to land on.
+The Streamlit interface can be deployed on Streamlit Community Cloud with
+`app.py` as the entry point and the provider settings added as secrets.
 
-### The dashboard (recommended) — Render, free tier
+## Project structure
 
-The repo ships a [`render.yaml`](render.yaml) blueprint, so this is mostly clicks:
+```
+src/
+  shop_env.py            stateful SQLite sandbox, tools, scenario events
+  resolution_agent.py    resolution agent loop, case file, tracing
+  outcome_verifier.py    deterministic outcome verification
+  resolution_eval.py     suite runner and pass^k scoring
+  hardening_loop.py      self-hardening loop with regression gate
+  agent_under_test.py    target agent for the test harness
+  mock_tools.py          mocked, logged tools for the test harness
+  failure_classifier.py  deterministic rules + LLM-as-judge
+  red_team_agent.py      adaptive red-team attacker
+  scenario_generator.py  adversarial scenario generation
+  reliability_scorecard.py, db.py
+data/                    scenario definitions; runs.db and traces/ are local only
+static/                  dashboard (HTML/CSS/JS) and bundled vendor assets
+tests/                   offline tests with a scripted model client
+server.py                FastAPI app serving the API and dashboard
+run_resolution.py        CLI for resolution scenarios
+harden_agent.py          CLI for the self-hardening loop
+llm_providers.py         provider adapter
+```
 
-1. Push this repo to GitHub (public, or private with Render granted access).
-2. On [render.com](https://render.com), **New → Blueprint**, select this repo.
-   The blueprint installs [`requirements-server.txt`](requirements-server.txt) —
-   the dashboard's runtime deps only, without Streamlit/pandas — so the build
-   stays small.
-3. Render reads `render.yaml` and asks for `GROQ_API_KEY` — paste it there.
-   It is stored by Render, never committed to the repo.
-4. Deploy. You get a public `*.onrender.com` URL.
+## Design decisions and limitations
 
-Three things to know about the free tier before you share the link:
-
-- **Cold starts.** The service sleeps after inactivity and takes tens of seconds
-  to wake. A judge clicking a cold link sees a blank tab first. Hit the URL
-  yourself a minute before anyone else does.
-- **Run history is ephemeral.** `data/runs.db` lives on the container's disk,
-  which resets on redeploy and restart, so the Regression Tracker starts empty.
-  For a persistent tracker you'd attach a Render disk (paid) or swap SQLite for
-  a hosted Postgres.
-- **Your free LLM quota is public.** Anyone with the link can trigger runs
-  against your Groq key and exhaust the rate limit. For a short-lived demo link
-  that is usually fine; if you'd rather not risk it, deploy without a key set — the
-  dashboard falls back to demo mode automatically and stays fully explorable.
-
-### The Streamlit prototype — Streamlit Community Cloud
-
-1. [share.streamlit.io](https://share.streamlit.io) → sign in with GitHub.
-2. "New app" → select this repo → main file path `app.py`.
-3. Under **Advanced settings → Secrets**, add:
-   ```toml
-   LLM_PROVIDER = "groq"
-   GROQ_API_KEY = "gsk_..."
-   AGENT_MODEL = "openai/gpt-oss-120b"
-   JUDGE_MODEL = "openai/gpt-oss-120b"
-   ```
-4. Deploy for a public `*.streamlit.app` URL.
-
-**Cost note:** on a free provider tier the exposure is rate limits, not money.
-On `LLM_PROVIDER=anthropic` every run makes billable calls — don't leave that
-configuration on a public link.
-
-## Design decisions & known limitations
-
-- **Why a hybrid classifier, not pure LLM-as-judge?** Irreversible-action
-  safety failures are too important to leave to a model's opinion — they're
-  checked deterministically. The LLM judge is reserved for genuinely
-  subjective quality questions.
-- **Why a mocked target agent instead of a real production agent?** Time
-  constraints on the initial build; the harness itself (`run_agent_turn`,
-  the classifier, the scorecard) is agent-agnostic and can be pointed at any
-  Anthropic tool-use agent by swapping `src/agent_under_test.py`.
-- **Single hardcoded target agent.** Right now "Riley" and her 6 tools are
-  wired directly into `agent_under_test.py`. The honest next step — and the
-  one that would turn this from a demo into a real platform — is a
-  "bring your own agent" flow: let a user paste in a system prompt + tool
-  schema (or an API endpoint) and have the harness, classifier, and scorecard
-  run against *that*, unmodified. The classifier and scorecard are already
-  agent-agnostic (they only depend on `{prompt, category,
-  should_not_auto_confirm}` and a generic trace shape), so this is a UI +
-  harness-parameterization change, not a rearchitecture.
-- **Single-agent-family focus.** Right now this evaluates Anthropic tool-use
-  agents specifically; a more general version would normalize traces from
-  any agent framework (LangChain, CrewAI, raw OpenAI function calling, etc.)
-  into a common trace format before classification.
+- **Verification against ground truth.** For state-changing agents the only
+  trustworthy evidence is the backend state. The resolution verifier never
+  consults a model, so every verdict is reproducible and explainable line by
+  line.
+- **Hybrid classifier in the test harness.** Irreversible-action safety
+  failures are checked deterministically; the LLM judge is reserved for
+  subjective quality questions such as goal drift.
+- **Guarded self-improvement.** Rules proposed by a model are accepted only
+  when the full suite shows a fix with no regressions, which prevents a patch
+  that helps one case from silently breaking another.
+- **Simulated backend.** The sandbox is realistic in behaviour but synthetic;
+  production use needs adapters to real order, inventory and payment APIs and
+  human review of escalations.
+- **Small, single-trial samples so far.** Published numbers come from one trial
+  per scenario; pass^3 runs are the next step before drawing firm conclusions.
+- **Fixed target agents.** The harness is agent-agnostic in design; a natural
+  extension is a bring-your-own-agent flow that accepts a system prompt and tool
+  schema or an API endpoint, and normalizing traces from other frameworks into
+  the common trace format.
 
 ## Tech stack
 
-Python, FastAPI (JSON API + static dashboard), Streamlit (original UI),
-SQLite, pandas. The LLM backend is pluggable — Anthropic, or any
-OpenAI-compatible free tier (Groq, Gemini, OpenRouter, local Ollama) through
-`llm_providers.py`. The dashboard is dependency-free HTML/CSS/JS over the API.
+Python, FastAPI, SQLite, plain HTML/CSS/JS with bundled Tailwind, Streamlit,
+`unittest`. The LLM backend is pluggable: Anthropic, or any OpenAI-compatible
+endpoint (Groq, Gemini, OpenRouter, local Ollama) through `llm_providers.py`.
 
-## Authors
+## Author
 
-- **Ujjawal Srivastava**
+**Ujjawal Srivastava**
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT, see [`LICENSE`](LICENSE).

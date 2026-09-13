@@ -140,9 +140,10 @@ class ToolUseBlock:
 class Response:
     """Mimics anthropic.types.Message closely enough for everything in src/."""
 
-    def __init__(self, content, stop_reason):
+    def __init__(self, content, stop_reason, reasoning=None):
         self.content = content
         self.stop_reason = stop_reason
+        self.reasoning = reasoning
 
 
 # --------------------------------------------------------------------------
@@ -270,7 +271,11 @@ def _response_from_openai(completion):
     stop_reason = "tool_use" if tool_calls else "end_turn"
     if not blocks:
         blocks.append(TextBlock(""))
-    return Response(blocks, stop_reason)
+    # Reasoning models (gpt-oss on Groq, DeepSeek-R1, ...) often return tool calls
+    # with no text and put their reasoning in a separate field. Keep it on the side
+    # rather than as a text block, so it can never become an agent's reply.
+    reasoning = getattr(message, "reasoning", None) or getattr(message, "reasoning_content", None)
+    return Response(blocks, stop_reason, reasoning if isinstance(reasoning, str) else None)
 
 
 # --------------------------------------------------------------------------

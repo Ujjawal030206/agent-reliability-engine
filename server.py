@@ -7,7 +7,7 @@ Run:      uvicorn server:app --reload --port 8000
 Docs:     http://localhost:8000/docs  (auto-generated - useful live reference
           while wiring up the frontend)
 
-Drop a Stitch export's index.html/CSS/JS into ./static and it will be served
+The dashboard in ./static is served
 at "/" automatically.
 """
 
@@ -27,6 +27,7 @@ import llm_providers
 from src import (
     agent_under_test, failure_classifier, reliability_scorecard, db,
     scenario_generator, mock_tools, red_team_agent,
+    resolution_agent, resolution_eval,
 )
 
 load_dotenv()
@@ -37,6 +38,11 @@ STATIC_DIR = os.path.join(APP_DIR, "static")
 
 with open(os.path.join(DATA_DIR, "scenario_bank.json")) as f:
     SCENARIO_BANK = json.load(f)
+
+with open(os.path.join(DATA_DIR, "resolution_scenarios.json")) as f:
+    RESOLUTION_SCENARIOS = json.load(f)
+
+MAX_RESOLUTION_TRIALS = 5
 
 JUDGE_MODEL = llm_providers.judge_model()
 
@@ -164,7 +170,113 @@ def get_run(run_id: str):
     return {"run_id": run_id, "results": results}
 
 
+# ---------------------------------------------------------------------------
+# Customer Resolution Agent: stateful sandbox, deterministic verification
+# ---------------------------------------------------------------------------
+
+def _resolution_version(version: str) -> str:
+    if version not in resolution_agent.SYSTEM_PROMPTS:
+        raise HTTPException(status_code=400, detail=f"Unknown agent_version '{version}'.")
+    return version
+
+
+@app.get("/api/resolution/scenarios")
+def list_resolution_scenarios():
+    return {"scenarios": RESOLUTION_SCENARIOS, "agent_versions": list(resolution_agent.SYSTEM_PROMPTS)}
+
+
+class ResolutionRunRequest(BaseModel):
+    scenario_id: str
+    agent_version: str = "v2_verified"
+
+
+@app.post("/api/resolution/run")
+def run_resolution_case(req: ResolutionRunRequest):
+    scenario = next((s for s in RESOLUTION_SCENARIOS if s["id"] == req.scenario_id), None)
+    if scenario is None:
+        raise HTTPException(status_code=404, detail=f"Unknown scenario '{req.scenario_id}'.")
+    version = _resolution_version(req.agent_version)
+    run = resolution_eval.run_trial(_client(), scenario, version)
+    return {"scenario": scenario, **run}
+
+
+class ResolutionEvalRequest(BaseModel):
+    agent_version: str = "v2_verified"
+    scenario_ids: Optional[List[str]] = None
+    trials: int = 1
+
+
+@app.post("/api/resolution/eval")
+def run_resolution_eval(req: ResolutionEvalRequest):
+    version = _resolution_version(req.agent_version)
+    pool = RESOLUTION_SCENARIOS
+    if req.scenario_ids:
+        pool = [s for s in RESOLUTION_SCENARIOS if s["id"] in req.scenario_ids]
+        if not pool:
+            raise HTTPException(status_code=404, detail="None of the scenario_ids matched.")
+    trials = max(1, min(req.trials, MAX_RESOLUTION_TRIALS))
+
+    report = resolution_eval.run_suite(_client(), pool, version, trials=trials)
+    summary = report["summary"]
+    run_id = str(uuid.uuid4())[:8]
+    db.save_run(
+        run_id, f"resolution/{version}", summary["pass_rate"], summary["trials"],
+        summary["passed"], summary["failed"],
+        [{
+            "scenario_id": r["scenario_id"],
+            "trial": t["trial"],
+            "classification": {
+                "verdict": t["verification"]["verdict"],
+                "failure_modes": t["verification"]["failure_modes"],
+                "rule_findings": t["verification"]["findings"],
+                "judge_explanation": "",
+            },
+        } for r in report["results"] for t in r["trials"] if "error" not in t],
+    )
+    return {"run_id": run_id, **report}
+
+
+TRACE_DIR = os.path.join(DATA_DIR, "traces")
+
+
+@app.get("/api/resolution/reports")
+def list_resolution_reports():
+    """Suite reports saved by `run_resolution.py --save`, newest first."""
+    if not os.path.isdir(TRACE_DIR):
+        return {"reports": []}
+    reports = []
+    for name in sorted(os.listdir(TRACE_DIR), reverse=True):
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(TRACE_DIR, name), encoding="utf-8") as f:
+                report = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        summary = report.get("summary", {})
+        reports.append({
+            "name": name,
+            "agent_version": report.get("agent_version"),
+            "trials_per_scenario": report.get("trials_per_scenario"),
+            "scenarios": summary.get("scenarios"),
+            "pass_rate": summary.get("pass_rate"),
+            "pass_hat_k": summary.get("pass_hat_k"),
+            "errors": summary.get("errors", 0),
+            "aborted": report.get("aborted"),
+        })
+    return {"reports": reports}
+
+
+@app.get("/api/resolution/reports/{name}")
+def get_resolution_report(name: str):
+    path = os.path.join(TRACE_DIR, os.path.basename(name))
+    if os.path.basename(name) != name or not name.endswith(".json") or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Report not found.")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 # Serve the frontend last, so it doesn't shadow the /api routes above.
-# Drop a Stitch export (index.html + assets) into ./static.
+# The dashboard lives in ./static.
 if os.path.isdir(STATIC_DIR):
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
