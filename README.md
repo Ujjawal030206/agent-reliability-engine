@@ -1,5 +1,7 @@
 # 🛡️ Agent Reliability Engine
 
+[![tests](https://github.com/Ujjawal030206/agent-reliability-engine/actions/workflows/tests.yml/badge.svg)](https://github.com/Ujjawal030206/agent-reliability-engine/actions/workflows/tests.yml)
+
 *Autonomous agents · deterministic verification · reliability testing*
 
 **Live demo:** https://agent-reliability-engine.onrender.com/ (free tier; the first request may take a few seconds to wake the service)
