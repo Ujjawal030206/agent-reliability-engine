@@ -126,7 +126,7 @@ function rsBlocks(trace) {
   const blocks = [rsStage("Goal", "text-primary", `
     <div class="font-body-md text-on-surface whitespace-pre-wrap">${esc(trace.goal)}</div>
     <div class="font-label-mono text-[10px] text-on-surface-variant mt-1">
-      verified customer ${esc(trace.customer_id)} · ${esc(trace.agent_version)} · ${esc(trace.model)}</div>`)];
+      verified customer ${esc(trace.customer_id)} · ${esc(trace.agent_version)} · ${esc(trace.model)}${(trace.providers || []).length ? ` · served by ${esc(trace.providers.join(", "))}` : ""}</div>`)];
 
   let shownIteration = null;
   for (const s of trace.steps || []) {

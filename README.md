@@ -231,7 +231,7 @@ The engine needs a tool-calling LLM but is not tied to one vendor.
 | `LLM_PROVIDER` | Cost | Key from | Default agent model |
 |---|---|---|---|
 | `groq` | free tier | [console.groq.com/keys](https://console.groq.com/keys) | `openai/gpt-oss-120b` |
-| `gemini` | free tier | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `gemini-2.0-flash` |
+| `gemini` | free tier | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `gemini-2.5-flash` |
 | `openrouter` | free models | [openrouter.ai/keys](https://openrouter.ai/keys) | `llama-3.3-70b-instruct:free` |
 | `ollama` | free, fully local | no key needed | `llama3.1` |
 | `custom` | varies | set `LLM_BASE_URL` | your choice |
@@ -241,6 +241,15 @@ The engine needs a tool-calling LLM but is not tied to one vendor.
 Free tiers have tight limits: a full 12-scenario resolution suite uses most of
 a model's daily token budget on Groq's free tier, so plan larger runs
 accordingly. Limits change; check each provider's documentation.
+
+### Backup providers
+
+Set `LLM_FALLBACKS` to keep runs going when the main provider is rate-limited
+or down, for example `LLM_FALLBACKS=gemini,groq:openai/gpt-oss-20b`. Providers
+are tried in order; each needs its own key, and `name:model` pins a model.
+A provider that hits a rate limit is skipped for five minutes
+(`LLM_FALLBACK_COOLDOWN`), and every trace records which provider answered.
+`/api/health` lists the active backups.
 
 ### How it stays provider-agnostic
 

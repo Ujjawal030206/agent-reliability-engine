@@ -193,6 +193,7 @@ def _run(client, env, scenario, agent_version, model, system_prompt, max_iterati
     last_problem = None
     stop_reason, final_text = "max_iterations", ""
     llm_calls = 0
+    providers_used = []
     started = time.time()
 
     for iteration in range(1, max_iterations + 1):
@@ -204,6 +205,9 @@ def _run(client, env, scenario, agent_version, model, system_prompt, max_iterati
             tools=shop_env.TOOL_SCHEMAS,
         )
         llm_calls += 1
+        served_by = getattr(client, "last_provider", None)
+        if served_by and served_by not in providers_used:
+            providers_used.append(served_by)
 
         text_parts, tool_uses, assistant_content = [], [], []
         for block in response.content:
@@ -294,6 +298,7 @@ def _run(client, env, scenario, agent_version, model, system_prompt, max_iterati
         "stop_reason": stop_reason,
         "hit_iteration_cap": stop_reason != "completed",
         "llm_calls": llm_calls,
+        "providers": providers_used,
         "duration_s": round(time.time() - started, 2),
         "env_events": env.event_log,
         "case_file": case.to_dict(),

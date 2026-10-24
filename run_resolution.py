@@ -67,7 +67,8 @@ def print_trial(scenario, run):
     o = verification["outcome"]
     print(f"OUTCOME   {o['resolution']} | refunded INR {o['total_refunded']:g} in {o['refund_count']} refund(s) | "
           f"replacements {o['replacements']} | escalated {o['escalated']} | adaptations {o['adaptations']} | "
-          f"stop={trace['stop_reason']} | {trace['llm_calls']} LLM calls, {trace['duration_s']}s")
+          f"stop={trace['stop_reason']} | {trace['llm_calls']} LLM calls, {trace['duration_s']}s"
+          + (f" | served by {', '.join(trace['providers'])}" if trace.get('providers') else ""))
     print(f"VERDICT   {verification['verdict'].upper()}")
     for finding in verification["findings"]:
         print(f"  - {finding['mode']}: {finding['detail']}")

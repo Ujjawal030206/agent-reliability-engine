@@ -23,10 +23,16 @@ Configure with LLM_PROVIDER in .env:
 
 Tool calling is required - the target agent under test is a tool-use agent.
 Pick a model that supports it (the defaults below all do).
+
+Optional backups, tried in order when the main provider is rate-limited or
+down (each needs its own key; pin a model with name:model):
+
+    LLM_FALLBACKS=gemini,groq:openai/gpt-oss-20b
 """
 
 import os
 import json
+import time
 import uuid
 
 # Preset endpoints + a tool-calling-capable default model for each provider.
@@ -40,8 +46,8 @@ PRESETS = {
     "gemini": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "key_env": "GEMINI_API_KEY",
-        "agent_model": "gemini-2.0-flash",
-        "judge_model": "gemini-2.0-flash-lite",
+        "agent_model": "gemini-2.5-flash",
+        "judge_model": "gemini-2.5-flash-lite",
     },
     "openrouter": {
         "base_url": "https://openrouter.ai/api/v1",
@@ -114,6 +120,7 @@ def describe() -> dict:
         "agent_model": agent_model(),
         "judge_model": judge_model(),
         "configured": is_configured(),
+        "fallbacks": [label for label, _, _ in _fallback_specs() if _key_for(label.split(":")[0])],
     }
 
 
@@ -297,14 +304,19 @@ class ProviderError(Exception):
 
 
 class _Messages:
-    def __init__(self, client, fallback_model):
+    def __init__(self, client, fallback_model, force_model=None, provider=None):
         self._client = client
         self._fallback_model = fallback_model
+        self._force_model = force_model
+        self._provider = provider
 
     def create(self, model=None, max_tokens=1024, system=None, messages=None, tools=None, **kwargs):
         # src/ hardcodes some Claude model names as defaults. On a non-Anthropic
         # provider those don't exist, so fall back to the configured model.
-        if not model or model.startswith("claude"):
+        if self._force_model:
+            # A backup provider serves its own model, whatever the caller asked for.
+            model = self._force_model
+        elif not model or model.startswith("claude"):
             model = self._fallback_model
 
         request = {
@@ -326,11 +338,11 @@ class _Messages:
         try:
             completion = self._client.chat.completions.create(**request)
         except Exception as exc:
-            raise _as_provider_error(exc, model) from exc
+            raise _as_provider_error(exc, model, self._provider) from exc
         return _response_from_openai(completion)
 
 
-def _as_provider_error(exc, model):
+def _as_provider_error(exc, model, provider=None):
     """Turn an SDK exception into a ProviderError with an actionable message."""
     status = getattr(exc, "status_code", None)
     detail = ""
@@ -342,7 +354,7 @@ def _as_provider_error(exc, model):
         elif isinstance(err, str):
             detail = err
     detail = detail or str(exc)
-    provider = provider_name()
+    provider = provider or provider_name()
 
     if status == 401:
         return ProviderError(
@@ -367,7 +379,7 @@ def _as_provider_error(exc, model):
 class OpenAICompatClient:
     """Drop-in stand-in for anthropic.Anthropic, backed by an OpenAI-compatible API."""
 
-    def __init__(self, base_url, api_key, fallback_model):
+    def __init__(self, base_url, api_key, fallback_model, force_model=None, provider=None, max_retries=None):
         try:
             from openai import OpenAI
         except ImportError as exc:  # pragma: no cover - dependency guard
@@ -382,18 +394,119 @@ class OpenAICompatClient:
         self._client = OpenAI(
             base_url=base_url,
             api_key=api_key,
-            max_retries=int(os.environ.get("LLM_MAX_RETRIES", "8")),
+            max_retries=max_retries if max_retries is not None else int(os.environ.get("LLM_MAX_RETRIES", "8")),
             timeout=float(os.environ.get("LLM_TIMEOUT", "120")),
         )
-        self.messages = _Messages(self._client, fallback_model)
+        self.messages = _Messages(self._client, fallback_model, force_model, provider)
+
+
+# --------------------------------------------------------------------------
+# Backup providers
+# --------------------------------------------------------------------------
+
+def _key_for(name):
+    if name == "anthropic":
+        return os.environ.get("ANTHROPIC_API_KEY", "")
+    preset = PRESETS.get(name)
+    if preset is None or preset["base_url"] is None:
+        return ""
+    return "not-needed" if preset["key_env"] is None else os.environ.get(preset["key_env"], "")
+
+
+def _fallback_specs():
+    """Parse LLM_FALLBACKS ("gemini,groq:openai/gpt-oss-20b") into (label, name, model)."""
+    specs = []
+    for item in (os.environ.get("LLM_FALLBACKS") or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        name, _, model = item.partition(":")
+        name = name.strip().lower()
+        if name != "anthropic" and name not in PRESETS:
+            continue
+        model = model.strip() or (PRESETS.get(name, {}).get("agent_model") or "claude-sonnet-5")
+        specs.append((f"{name}:{model}", name, model))
+    return specs
+
+
+class _AnthropicForcedModel:
+    """An Anthropic client that always uses one model, for use as a backup."""
+
+    def __init__(self, client, model):
+        self._client = client
+        self._model = model
+        self.messages = self
+
+    def create(self, **kwargs):
+        kwargs["model"] = self._model
+        return self._client.messages.create(**kwargs)
+
+
+class FallbackClient:
+    """Tries each provider in order, moving on when one is rate-limited or down.
+
+    A provider that answers with a rate limit is skipped for a cool-down
+    period, so a daily quota that has run out costs one failed call rather
+    than one per request. `last_provider` names whoever answered last.
+    """
+
+    def __init__(self, clients, cooldown_s=None):
+        self._clients = clients
+        self._cooldown_s = float(os.environ.get("LLM_FALLBACK_COOLDOWN", "300")) if cooldown_s is None else cooldown_s
+        self._resting_until = {}
+        self.last_provider = None
+        self.messages = self
+
+    @property
+    def providers(self):
+        return [label for label, _ in self._clients]
+
+    def create(self, **kwargs):
+        failures = []
+        now = time.time()
+        ready = [c for c in self._clients if self._resting_until.get(c[0], 0) <= now]
+        # If every provider is resting, try them anyway rather than fail outright.
+        for label, client in ready or self._clients:
+            try:
+                response = client.messages.create(**kwargs)
+            except Exception as exc:  # any provider failure moves on to the next one
+                status = getattr(exc, "status_code", None)
+                if status == 429:
+                    self._resting_until[label] = time.time() + self._cooldown_s
+                failures.append((label, status, getattr(exc, "message", None) or str(exc)))
+                continue
+            self.last_provider = label
+            return response
+        summary = "; ".join(f"{label}: {message}" for label, _, message in failures)
+        status = 429 if all(s == 429 for _, s, _ in failures) else 502
+        raise ProviderError(f"All configured providers failed. {summary}", status_code=status)
+
+
+def _backup_client(name, model):
+    if name == "anthropic":
+        from anthropic import Anthropic
+        return _AnthropicForcedModel(Anthropic(api_key=_key_for(name), max_retries=1), model)
+    preset = PRESETS[name]
+    return OpenAICompatClient(preset["base_url"], _key_for(name), model,
+                              force_model=model, provider=name, max_retries=1)
 
 
 def get_client(fallback_model=None):
-    """Return an Anthropic client, or an Anthropic-shaped shim for a free provider.
+    """Return the configured client, wrapped with backups when LLM_FALLBACKS is set.
 
     Raises RuntimeError with a user-facing message if nothing is configured;
     server.py turns that into an HTTP 400.
     """
+    backups = [(label, name, model) for label, name, model in _fallback_specs() if _key_for(name)]
+    primary = _primary_client(fallback_model, fast_failover=bool(backups))
+    if not backups:
+        return primary
+    label = f"{provider_name()}:{agent_model()}"
+    chain = [(label, primary)] + [(lbl, _backup_client(name, model)) for lbl, name, model in backups]
+    return FallbackClient(chain)
+
+
+def _primary_client(fallback_model=None, fast_failover=False):
     provider = provider_name()
 
     if provider == "anthropic":
@@ -401,7 +514,7 @@ def get_client(fallback_model=None):
         if not key:
             raise RuntimeError("ANTHROPIC_API_KEY not set on the server.")
         from anthropic import Anthropic
-        return Anthropic(api_key=key)
+        return Anthropic(api_key=key, max_retries=1) if fast_failover else Anthropic(api_key=key)
 
     preset = _preset()
     base_url = os.environ.get("LLM_BASE_URL") or preset["base_url"]
@@ -415,4 +528,6 @@ def get_client(fallback_model=None):
         env_name = preset["key_env"] or "LLM_API_KEY"
         raise RuntimeError(f"{env_name} not set on the server (LLM_PROVIDER={provider}).")
 
-    return OpenAICompatClient(base_url, key, fallback_model or agent_model())
+    # With backups configured, give up quickly here and let the next provider answer.
+    return OpenAICompatClient(base_url, key, fallback_model or agent_model(), provider=provider,
+                              max_retries=1 if fast_failover else None)
