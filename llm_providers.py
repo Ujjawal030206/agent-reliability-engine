@@ -46,8 +46,8 @@ PRESETS = {
     "gemini": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "key_env": "GEMINI_API_KEY",
-        "agent_model": "gemini-2.5-flash",
-        "judge_model": "gemini-2.5-flash-lite",
+        "agent_model": "gemini-3.5-flash",
+        "judge_model": "gemini-3.1-flash-lite",
     },
     "openrouter": {
         "base_url": "https://openrouter.ai/api/v1",
@@ -191,7 +191,24 @@ def _budget_for(model, max_tokens):
     return max_tokens
 
 
-def _messages_to_openai(system, messages):
+# Gemini 3 signs each tool call it makes and rejects the next turn unless the
+# signature comes back with it. src/ rebuilds tool_use blocks from id, name and
+# input only, so the adapter remembers the signatures by tool-call id.
+_TOOL_CALL_EXTRAS = {}
+_MAX_REMEMBERED_CALLS = 5000
+
+# Google's documented placeholder for tool calls Gemini did not make itself,
+# e.g. a case that failed over to Gemini partway through.
+_GEMINI_UNSIGNED = {"google": {"thought_signature": "skip_thought_signature_validator"}}
+
+
+def _remember_extra(call_id, extra):
+    if len(_TOOL_CALL_EXTRAS) >= _MAX_REMEMBERED_CALLS:
+        _TOOL_CALL_EXTRAS.pop(next(iter(_TOOL_CALL_EXTRAS)))
+    _TOOL_CALL_EXTRAS[call_id] = extra
+
+
+def _messages_to_openai(system, messages, provider=None):
     """Flatten Anthropic content blocks into the OpenAI message sequence.
 
     Anthropic carries tool results as blocks inside a *user* message; OpenAI
@@ -215,16 +232,21 @@ def _messages_to_openai(system, messages):
                 if btype == "text":
                     text_parts.append(block.get("text", ""))
                 elif btype == "tool_use":
-                    tool_calls.append({
+                    call = {
                         "id": block["id"],
                         "type": "function",
                         "function": {
                             "name": block["name"],
                             "arguments": json.dumps(block.get("input") or {}),
                         },
-                    })
+                    }
+                    if block["id"] in _TOOL_CALL_EXTRAS:
+                        call["extra_content"] = _TOOL_CALL_EXTRAS[block["id"]]
+                    tool_calls.append(call)
             msg = {"role": "assistant", "content": " ".join(text_parts).strip() or None}
             if tool_calls:
+                if provider == "gemini" and not any("extra_content" in c for c in tool_calls):
+                    tool_calls[0]["extra_content"] = _GEMINI_UNSIGNED
                 msg["tool_calls"] = tool_calls
             out.append(msg)
             continue
@@ -269,11 +291,11 @@ def _response_from_openai(completion):
             parsed = {}
         if not isinstance(parsed, dict):
             parsed = {}
-        blocks.append(ToolUseBlock(
-            id=getattr(call, "id", None) or f"call_{uuid.uuid4().hex[:12]}",
-            name=call.function.name,
-            input=parsed,
-        ))
+        call_id = getattr(call, "id", None) or f"call_{uuid.uuid4().hex[:12]}"
+        extra = (getattr(call, "model_extra", None) or {}).get("extra_content")
+        if extra:
+            _remember_extra(call_id, extra)
+        blocks.append(ToolUseBlock(id=call_id, name=call.function.name, input=parsed))
 
     stop_reason = "tool_use" if tool_calls else "end_turn"
     if not blocks:
@@ -322,7 +344,7 @@ class _Messages:
         request = {
             "model": model,
             "max_tokens": _budget_for(model, max_tokens),
-            "messages": _messages_to_openai(system, messages or []),
+            "messages": _messages_to_openai(system, messages or [], self._provider),
         }
         if tools:
             request["tools"] = _tools_to_openai(tools)

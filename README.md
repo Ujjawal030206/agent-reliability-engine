@@ -231,7 +231,7 @@ The engine needs a tool-calling LLM but is not tied to one vendor.
 | `LLM_PROVIDER` | Cost | Key from | Default agent model |
 |---|---|---|---|
 | `groq` | free tier | [console.groq.com/keys](https://console.groq.com/keys) | `openai/gpt-oss-120b` |
-| `gemini` | free tier | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `gemini-2.5-flash` |
+| `gemini` | free tier | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `gemini-3.5-flash` |
 | `openrouter` | free models | [openrouter.ai/keys](https://openrouter.ai/keys) | `llama-3.3-70b-instruct:free` |
 | `ollama` | free, fully local | no key needed | `llama3.1` |
 | `custom` | varies | set `LLM_BASE_URL` | your choice |

@@ -77,9 +77,31 @@ class FallbackChainTests(unittest.TestCase):
             return NS(choices=[NS(message=NS(content="hi", tool_calls=None))])
 
         fake_openai = NS(chat=NS(completions=NS(create=complete)))
-        messages = llm_providers._Messages(fake_openai, "default-model", force_model="gemini-2.5-flash")
+        messages = llm_providers._Messages(fake_openai, "default-model", force_model="gemini-3.5-flash")
         messages.create(model="openai/gpt-oss-120b", messages=[{"role": "user", "content": "x"}])
-        self.assertEqual(sent["model"], "gemini-2.5-flash")
+        self.assertEqual(sent["model"], "gemini-3.5-flash")
+
+
+class ThoughtSignatureTests(unittest.TestCase):
+    def history(self, call_id):
+        return [{"role": "user", "content": "Where is ORD-2001?"},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": call_id, "name": "get_order",
+                                                   "input": {"order_id": "ORD-2001"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call_id, "content": "{}"}]}]
+
+    def test_signature_is_sent_back_with_the_tool_call(self):
+        signed = {"google": {"thought_signature": "sig-123"}}
+        call = NS(id="call-signed", function=NS(name="get_order", arguments='{"order_id": "ORD-2001"}'),
+                  model_extra={"extra_content": signed})
+        llm_providers._response_from_openai(NS(choices=[NS(message=NS(content=None, tool_calls=[call]))]))
+        sent = llm_providers._messages_to_openai(None, self.history("call-signed"), "gemini")
+        self.assertEqual(sent[1]["tool_calls"][0]["extra_content"], signed)
+
+    def test_calls_from_another_provider_get_the_placeholder_only_on_gemini(self):
+        to_gemini = llm_providers._messages_to_openai(None, self.history("call-from-groq"), "gemini")
+        to_groq = llm_providers._messages_to_openai(None, self.history("call-from-groq"), "groq")
+        self.assertEqual(to_gemini[1]["tool_calls"][0]["extra_content"], llm_providers._GEMINI_UNSIGNED)
+        self.assertNotIn("extra_content", to_groq[1]["tool_calls"][0])
 
 
 PROVIDER_VARS = ("LLM_PROVIDER", "LLM_FALLBACKS", "LLM_BASE_URL", "LLM_API_KEY", "AGENT_MODEL", "JUDGE_MODEL",
@@ -110,9 +132,9 @@ class ConfigurationTests(unittest.TestCase):
         client = llm_providers.get_client()
         self.assertIsInstance(client, llm_providers.FallbackClient)
         self.assertEqual(client.providers,
-                         ["groq:openai/gpt-oss-120b", "gemini:gemini-2.5-flash", "groq:openai/gpt-oss-20b"])
+                         ["groq:openai/gpt-oss-120b", "gemini:gemini-3.5-flash", "groq:openai/gpt-oss-20b"])
         self.assertEqual(llm_providers.describe()["fallbacks"],
-                         ["gemini:gemini-2.5-flash", "groq:openai/gpt-oss-20b"])
+                         ["gemini:gemini-3.5-flash", "groq:openai/gpt-oss-20b"])
 
     def test_without_fallbacks_the_client_is_unchanged(self):
         self.patcher = provider_env(LLM_PROVIDER="groq", GROQ_API_KEY="k1")
