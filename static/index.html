@@ -43,6 +43,8 @@
       <span class="material-symbols-outlined">security</span><span class="font-headline-sm text-headline-sm">Red Teaming</span></a></li>
     <li><a data-nav="resolution" class="nav-link flex items-center gap-3 px-gutter py-3 text-on-surface-variant hover:text-primary hover:bg-surface-container-low transition-colors duration-200" href="#resolution">
       <span class="material-symbols-outlined">support_agent</span><span class="font-headline-sm text-headline-sm">Resolution Agent</span></a></li>
+    <li><a data-nav="chat" class="nav-link flex items-center gap-3 px-gutter py-3 text-on-surface-variant hover:text-primary hover:bg-surface-container-low transition-colors duration-200" href="#chat">
+      <span class="material-symbols-outlined">forum</span><span class="font-headline-sm text-headline-sm">Live Chat</span></a></li>
   </ul>
 
   <div class="mt-auto border-t border-outline-variant/30 pt-4">
@@ -72,6 +74,7 @@
     <span data-nav="analytics" class="material-symbols-outlined cursor-pointer hover:text-primary transition-colors">analytics</span>
     <span data-nav="redteam" class="material-symbols-outlined cursor-pointer hover:text-primary transition-colors">security</span>
     <span data-nav="resolution" class="material-symbols-outlined cursor-pointer hover:text-primary transition-colors">support_agent</span>
+    <span data-nav="chat" class="material-symbols-outlined cursor-pointer hover:text-primary transition-colors">forum</span>
   </div>
 </nav>
 
@@ -440,6 +443,81 @@
       </section>
     </section>
 
+    <!-- ===================== LIVE CHAT ===================== -->
+    <section id="view-chat" class="view hidden flex flex-col xl:flex-row gap-gutter">
+      <section class="xl:w-[300px] flex flex-col gap-stack-md card p-stack-md h-fit shrink-0">
+        <div class="border-b border-[#2D333B] pb-3 mb-1 flex items-center justify-between gap-2">
+          <h3 class="font-headline-sm text-headline-sm text-on-surface flex items-center gap-2">
+            <span class="material-symbols-outlined text-primary text-sm">forum</span> You are the customer
+          </h3>
+        </div>
+
+        <div id="ch-config" class="flex flex-col gap-stack-md">
+          <div class="flex flex-col gap-2">
+            <label class="font-label-mono text-label-mono text-on-surface-variant">Chat as</label>
+            <div id="ch-customers" class="flex flex-col gap-1"></div>
+          </div>
+
+          <div class="flex flex-col gap-2">
+            <label class="font-label-mono text-label-mono text-on-surface-variant">Disruptions to inject</label>
+            <div id="ch-disruptions" class="flex flex-col gap-1"></div>
+          </div>
+
+          <div class="flex flex-col gap-2">
+            <label class="font-label-mono text-label-mono text-on-surface-variant">Agent version</label>
+            <select id="ch-version" class="bg-surface-container-lowest border border-[#2D333B] rounded p-2 text-on-surface font-body-md focus:border-primary focus:ring-1 focus:ring-primary outline-none appearance-none"></select>
+          </div>
+        </div>
+        <div id="ch-summary" class="hidden flex-col gap-2"></div>
+
+        <button id="btn-ch-new" class="px-4 py-2 border border-[#2D333B] rounded font-label-mono text-label-mono text-on-surface hover:border-secondary hover:text-secondary transition-colors flex items-center justify-center gap-2">
+          <span class="material-symbols-outlined text-sm">restart_alt</span> New chat
+        </button>
+        <p class="font-label-mono text-[10px] leading-4 text-on-surface-variant">
+          Each chat gets its own fresh store backend. The setup locks once you send the first message.
+          Consent is read from your own words, and the verifier checks the backend after every agent turn.
+        </p>
+      </section>
+
+      <section class="flex-1 flex flex-col lg:flex-row gap-gutter min-w-0">
+        <div class="lg:w-1/2 card overflow-hidden flex flex-col min-h-[560px] lg:max-h-[calc(100vh-190px)]">
+          <div class="bg-surface-container-highest border-b border-[#2D333B] px-stack-md py-3 flex items-center justify-between gap-2 shrink-0">
+            <h3 class="font-headline-sm text-headline-sm text-on-surface flex items-center gap-2">
+              <span class="material-symbols-outlined text-secondary text-sm">chat</span> Conversation
+            </h3>
+            <span id="ch-status" class="font-label-mono text-[10px] text-on-surface-variant"></span>
+          </div>
+          <div id="ch-messages" class="flex-1 overflow-y-auto p-stack-md flex flex-col gap-3"></div>
+          <div id="ch-working" class="hidden px-stack-md py-2 border-t border-[#2D333B] flex items-center gap-3">
+            <span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+            <span id="ch-working-label" class="font-label-mono text-label-mono text-primary truncate">Riley is working on it</span>
+            <span id="ch-elapsed" class="font-label-mono text-label-mono text-on-surface-variant ml-auto">0s</span>
+          </div>
+          <div id="ch-suggestions" class="px-stack-md pt-2 flex flex-wrap gap-1 shrink-0"></div>
+          <form id="ch-form" class="p-stack-md flex gap-2 items-end shrink-0">
+            <textarea id="ch-input" rows="2" maxlength="1000" placeholder="Describe your problem as the customer..."
+              class="flex-1 resize-none bg-surface-container-lowest border border-[#2D333B] rounded p-2 text-on-surface font-body-md focus:border-primary focus:ring-1 focus:ring-primary outline-none"></textarea>
+            <button id="btn-ch-send" type="submit" class="px-4 py-2 h-[42px] bg-primary text-on-primary rounded font-label-mono text-label-mono hover:bg-primary-container transition-colors flex items-center gap-1">
+              <span class="material-symbols-outlined text-sm">send</span> Send
+            </button>
+          </form>
+        </div>
+
+        <div class="lg:w-1/2 flex flex-col gap-gutter min-w-0 lg:max-h-[calc(100vh-190px)]">
+          <div id="ch-verdict" class="card p-stack-md shrink-0 max-h-[45%] overflow-y-auto"></div>
+          <div class="card overflow-hidden flex flex-col flex-1 min-h-[300px]">
+            <div class="bg-surface-container-highest border-b border-[#2D333B] px-stack-md py-3 flex items-center justify-between flex-wrap gap-2 shrink-0">
+              <h3 class="font-headline-sm text-headline-sm text-on-surface flex items-center gap-2">
+                <span class="material-symbols-outlined text-secondary text-sm">timeline</span> What the agent is doing
+              </h3>
+              <span class="font-label-mono text-[10px] text-on-surface-variant">live, step by step</span>
+            </div>
+            <div id="ch-timeline" class="p-stack-md flex flex-col gap-3 overflow-y-auto flex-1"></div>
+          </div>
+        </div>
+      </section>
+    </section>
+
   </div>
 
   <!-- toast -->
@@ -457,5 +535,6 @@
 
 <script src="app.js"></script>
 <script src="resolution.js"></script>
+<script src="chat.js"></script>
 </body>
 </html>

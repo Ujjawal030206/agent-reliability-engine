@@ -108,6 +108,26 @@ python harden_agent.py R02 R10 --rounds 2             # a cheaper subset
 `--save` writes reports to `data/traces/`; the dashboard can replay them
 without spending model quota again.
 
+### Live chat
+
+The dashboard's **Live Chat** view puts a person in the customer's seat. Pick
+one of the sandbox's customers, optionally switch on disruptions (stock selling
+out mid-case, a payment-gateway timeout that commits anyway, a refund-limit
+change, an inventory outage), and write to support. The agent works the case
+against a fresh backend while its lookups, decisions, actions and adaptations
+stream into the trace panel.
+
+When the agent calls `ask_customer`, the loop pauses until the person answers,
+so offers such as "would a refund work instead?" get a real reply. Consent is
+read from the customer's own words: a resolution counts as agreed only when the
+customer asks for it, or says yes to an offer of it, in a clause that does not
+negate it. Each consent is shown on the message that gave it.
+
+A free conversation has no expected outcome, so after every agent turn the
+verifier checks the universal invariants only: no duplicate refund, no action
+without consent or on another customer's order, every state change verified,
+and no claim the backend contradicts.
+
 ### Results
 
 Live runs on Groq's free tier, one trial per scenario (13 Sept 2026), agent
@@ -177,8 +197,10 @@ flowchart LR
 uvicorn server:app --reload --port 8000
 ```
 
-Open `http://localhost:8000`. The dashboard has five views:
+Open `http://localhost:8000`. The dashboard has six views:
 
+- **Live Chat**: you play the customer and the agent resolves your case live,
+  with optional injected disruptions and a verdict after every turn.
 - **Resolution Agent**: runs a resolution case live and replays it step by
   step, including injected world changes and the verifier's findings. It runs
   the full suite with pass^k and loads saved reports from `data/traces/`.
@@ -307,6 +329,7 @@ The Streamlit interface can be deployed on Streamlit Community Cloud with
 src/
   shop_env.py            stateful SQLite sandbox, tools, scenario events
   resolution_agent.py    resolution agent loop, case file, tracing
+  live_chat.py           live customer chat sessions and disruptions
   outcome_verifier.py    deterministic outcome verification
   resolution_eval.py     suite runner and pass^k scoring
   hardening_loop.py      self-hardening loop with regression gate

@@ -67,6 +67,37 @@ WRITE_TOOL_RESOLUTION = {
 }
 QUESTION_TYPES = ["accept_refund_instead", "accept_replacement_instead", "accept_warranty_escalation", "clarify"]
 
+# A live customer's free text, read for consent. Deliberately plain and visible:
+# a resolution counts as agreed only when the customer names it, or says yes to
+# an offer of it, in a clause that does not negate it.
+_ASKS = {
+    "refund": re.compile(r"\brefund|money back|reimburs|paise? wapas", re.I),
+    "replacement": re.compile(r"\breplac|\bexchange|\bswap|\bnew one\b|another (one|pair|unit)", re.I),
+    "cancellation": re.compile(r"\bcancel", re.I),
+}
+_NEGATED = re.compile(r"\b(no|not|never|nahi|nope|without|instead of|rather than|dont)\b|n't\b", re.I)
+_YES = re.compile(r"^\W*(yes|yeah|yep|yup|ok|okay|sure|fine|alright|go ahead|please do|do it|that works|"
+                  r"sounds good|agreed|accept|haan|ha|theek)\b", re.I)
+_OFFER_GRANTS = {"accept_refund_instead": "refund", "accept_replacement_instead": "replacement"}
+
+
+def requested_resolutions(text: str) -> set:
+    """Resolutions a customer message asks for, ignoring clauses that negate them."""
+    wanted = set()
+    for clause in re.split(r"[.!?;,\n]+|\bbut\b", text or "", flags=re.I):
+        if _NEGATED.search(clause):
+            continue
+        wanted |= {kind for kind, pattern in _ASKS.items() if pattern.search(clause)}
+    return wanted
+
+
+def consents_from_answer(question_type: str, answer: str) -> set:
+    """What a live customer's answer to ask_customer agrees to."""
+    granted = requested_resolutions(answer)
+    if question_type in _OFFER_GRANTS and _YES.search(answer or ""):
+        granted.add(_OFFER_GRANTS[question_type])
+    return granted
+
 
 def tool_kind(name: str) -> str:
     if name in READ_TOOLS:
@@ -131,6 +162,9 @@ class ShopEnv:
     def __init__(self, scenario: dict = None):
         scenario = scenario or {}
         self.session_customer = scenario.get("customer_id", "cust_88")
+        # Live mode: ask_customer is answered by a person (live_reply) rather than a script.
+        self.live = bool(scenario.get("live"))
+        self.live_reply = None
         self.consents = set(scenario.get("initial_consents", []))
         self.customer_script = scenario.get("customer_script", {})
         self.policy = dict(DEFAULT_POLICY)
@@ -195,7 +229,10 @@ class ShopEnv:
         """State changes used by scenario setup and by 'after' events."""
         kind = effect.get("type")
         if kind == "set_stock":
-            self.db.execute("UPDATE products SET stock = ? WHERE sku = ?", (int(effect["stock"]), effect["sku"]))
+            if effect["sku"] == "*":
+                self.db.execute("UPDATE products SET stock = ?", (int(effect["stock"]),))
+            else:
+                self.db.execute("UPDATE products SET stock = ? WHERE sku = ?", (int(effect["stock"]), effect["sku"]))
         elif kind == "set_order":
             allowed = {"status", "delivered_on"}
             for field, value in effect.get("fields", {}).items():
@@ -386,7 +423,20 @@ class ShopEnv:
     def check_eligibility(self, order_id, resolution, sku=None, quantity=None, amount=None):
         return self._eligibility(order_id, resolution, sku=sku, quantity=quantity, amount=amount)
 
+    def customer_wrote(self, text):
+        """A live customer's own message: record the resolutions it asks for."""
+        granted = requested_resolutions(text)
+        self.consents |= granted
+        return sorted(granted)
+
     def ask_customer(self, question_type, message=""):
+        if self.live:
+            if self.live_reply is None:
+                return {"status": "error", "error": "one_question_at_a_time",
+                        "detail": "Ask the customer one question at a time and wait for the answer."}
+            self.questions.append({"question_type": question_type, "message": message})
+            self.consents |= consents_from_answer(question_type, self.live_reply)
+            return {"customer_reply": self.live_reply}
         entry = self.customer_script.get(question_type)
         self.questions.append({"question_type": question_type, "message": message})
         if entry is None:

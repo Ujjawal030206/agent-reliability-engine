@@ -173,41 +173,108 @@ def run_case(client, scenario: dict, agent_version: str = "v2_verified", model: 
     Stops when the agent replies without calling a tool, repeats an identical
     tool call three times, or reaches max_iterations.
     """
-    model = model or os.environ.get("AGENT_MODEL") or "claude-sonnet-5"
-    # A custom prompt (e.g. one grown by the hardening loop) overrides the named version.
-    system_prompt = system_prompt or SYSTEM_PROMPTS.get(agent_version, SYSTEM_PROMPTS["v2_verified"])
     env = shop_env.ShopEnv(scenario)
     try:
-        return _run(client, env, scenario, agent_version, model, system_prompt, max_iterations)
+        session = ResolutionSession(client, env, scenario["customer_message"], agent_version, model, system_prompt)
+        session.advance(max_iterations)
+        return session.trace(scenario.get("id"))
     finally:
         env.close()
 
 
-def _run(client, env, scenario, agent_version, model, system_prompt, max_iterations):
-    goal = scenario["customer_message"]
-    case = CaseFile(goal, env.session_customer)
+class ResolutionSession:
+    """One resolution case as a loop that can stop and pick up again.
 
-    messages = [{"role": "user", "content": goal}]
-    steps, turns = [], []
-    call_counts = {}
-    last_problem = None
-    stop_reason, final_text = "max_iterations", ""
-    llm_calls = 0
-    providers_used = []
-    started = time.time()
+    run_case drives it to the end in one go, with ask_customer answered from
+    the scenario's script. A live chat sets pause_for_customer: the loop then
+    stops whenever the agent asks the customer something, and answer() resumes
+    it with what the person actually typed.
+    """
 
-    for iteration in range(1, max_iterations + 1):
-        response = client.messages.create(
-            model=model,
+    def __init__(self, client, env, goal: str, agent_version: str = "v2_verified", model: str = None,
+                 system_prompt: str = None, pause_for_customer: bool = False):
+        self.client = client
+        self.env = env
+        self.goal = goal
+        self.agent_version = agent_version
+        self.model = model or os.environ.get("AGENT_MODEL") or "claude-sonnet-5"
+        # A custom prompt (e.g. one grown by the hardening loop) overrides the named version.
+        self.system_prompt = system_prompt or SYSTEM_PROMPTS.get(agent_version, SYSTEM_PROMPTS["v2_verified"])
+        self.pause_for_customer = pause_for_customer
+
+        self.case = CaseFile(goal, env.session_customer)
+        self.messages = [{"role": "user", "content": goal}]
+        self.steps, self.turns = [], []
+        self.call_counts = {}
+        self.last_problem = None
+        self.iteration = 0
+        self.stop_reason, self.final_text = "max_iterations", ""
+        self.llm_calls = 0
+        self.providers_used = []
+        self.busy_s = 0.0
+        # While waiting for the customer: the ask_customer call and the rest of its turn's results.
+        self.pending = None
+
+    @property
+    def question(self):
+        """The question the agent is waiting on the customer to answer, if any."""
+        return self.pending["tool_use"].input.get("message", "") if self.pending else None
+
+    def answer(self, text: str):
+        """Resume with the customer's words: the answer to a pending question, or a new message."""
+        self.final_text = ""
+        # Repeating a call is fine across customer messages; loop detection is per request.
+        self.call_counts = {}
+        if self.pending:
+            pending, self.pending = self.pending, None
+            self.env.live_reply = text
+            try:
+                pending["results"][pending["slot"]] = self._execute(pending["tool_use"], pending["turn"])
+            finally:
+                self.env.live_reply = None
+            self.messages.append({"role": "user", "content": pending["results"]})
+            return
+        self.case.customer_answers.append(f"customer wrote: \"{_compact(text, 300)}\"")
+        last = self.messages[-1]
+        if last["role"] != "user":
+            self.messages.append({"role": "user", "content": text})
+        elif isinstance(last["content"], list):
+            # After a stopped turn the history already ends on tool results; keep roles alternating.
+            last["content"].append({"type": "text", "text": text})
+        else:
+            # The previous message got no response (e.g. a provider error); send both together.
+            last["content"] += "\n\n" + text
+
+    def advance(self, max_iterations: int = 16) -> str:
+        """Run the loop until the agent replies, asks the customer something, or is stopped."""
+        started = time.time()
+        try:
+            for _ in range(max_iterations):
+                stopped = self._iterate()
+                if stopped:
+                    self.stop_reason = stopped
+                    return stopped
+            self.stop_reason = "max_iterations"
+            return self.stop_reason
+        finally:
+            if self.stop_reason in ("max_iterations", "loop_detected") and not self.final_text and self.turns:
+                self.final_text = self.turns[-1]["text"]
+            self.busy_s += time.time() - started
+
+    def _iterate(self):
+        self.iteration += 1
+        iteration = self.iteration
+        response = self.client.messages.create(
+            model=self.model,
             max_tokens=1024,
-            system=system_prompt + "\n\n" + case.render(),
-            messages=messages,
+            system=self.system_prompt + "\n\n" + self.case.render(),
+            messages=self.messages,
             tools=shop_env.TOOL_SCHEMAS,
         )
-        llm_calls += 1
-        served_by = getattr(client, "last_provider", None)
-        if served_by and served_by not in providers_used:
-            providers_used.append(served_by)
+        self.llm_calls += 1
+        served_by = getattr(self.client, "last_provider", None)
+        if served_by and served_by not in self.providers_used:
+            self.providers_used.append(served_by)
 
         text_parts, tool_uses, assistant_content = [], [], []
         for block in response.content:
@@ -224,83 +291,86 @@ def _run(client, env, scenario, agent_version, model, system_prompt, max_iterati
         if tool_uses and not decision and isinstance(reasoning, str) and reasoning.strip():
             # Reasoning models often call tools without writing anything; show their reasoning instead.
             decision, decision_source = _compact(" ".join(reasoning.split()), 300), "model_reasoning"
-        turns.append({"iteration": iteration, "text": decision, "decision_source": decision_source,
-                      "tool_uses": [{"name": t.name, "input": t.input} for t in tool_uses]})
-        messages.append({"role": "assistant", "content": assistant_content})
+        self.turns.append({"iteration": iteration, "text": decision, "decision_source": decision_source,
+                           "tool_uses": [{"name": t.name, "input": t.input} for t in tool_uses]})
+        self.messages.append({"role": "assistant", "content": assistant_content})
 
         if not tool_uses:
-            final_text = decision
-            stop_reason = "completed"
-            break
+            self.final_text = decision
+            return "completed"
 
+        turn = {"iteration": iteration, "decision": decision, "decision_source": decision_source}
         tool_results = []
-        loop_detected = False
         for t in tool_uses:
-            sig = f"{t.name}:{json.dumps(t.input, sort_keys=True)}"
-            call_counts[sig] = call_counts.get(sig, 0) + 1
+            if self.pause_for_customer and t.name == "ask_customer" and self.pending is None:
+                # Answered by answer() once the customer replies.
+                self.pending = {"tool_use": t, "turn": turn, "results": tool_results, "slot": len(tool_results)}
+                tool_results.append(None)
+                continue
+            tool_results.append(self._execute(t, turn))
 
-            result = env.call(t.name, t.input)
-            logged = env.action_log[-1]
-            step = {
-                "index": len(steps) + 1,
-                "iteration": iteration,
-                "decision": decision,
-                "decision_source": decision_source,
-                "tool": t.name,
-                "kind": shop_env.tool_kind(t.name),
-                "input": t.input,
-                "result": result,
-                "status": shop_env.result_status(result),
-                "env_events": logged["events"],
-                "consents_at_call": logged["consents_at_call"],
-                "order_customer": logged["order_customer"],
-                "adaptation": None,
-                "retry_of": None,
-            }
-            # Calls made in the same turn as a failure were chosen before the agent
-            # saw it, so only a later turn can count as reacting to it.
-            if last_problem and iteration > last_problem["iteration"]:
-                if sig == last_problem["sig"]:
-                    step["retry_of"] = last_problem["step"]
-                else:
-                    step["adaptation"] = {"after_step": last_problem["step"], "problem": last_problem["problem"]}
-                last_problem = None
-            problem = observed_problem(t.name, result, step["status"])
-            if problem:
-                last_problem = {"step": step["index"], "iteration": iteration, "sig": sig, "problem": problem}
+        loop_detected = any(count >= 3 for count in self.call_counts.values())
+        if self.pending:
+            return "loop_detected" if loop_detected else "waiting_for_customer"
+        self.messages.append({"role": "user", "content": tool_results})
+        return "loop_detected" if loop_detected else None
 
-            steps.append(step)
-            case.observe(step)
-            tool_results.append({"type": "tool_result", "tool_use_id": t.id,
-                                 "content": json.dumps(result, default=str)})
-            if call_counts[sig] >= 3:
-                loop_detected = True
+    def _execute(self, t, turn) -> dict:
+        """Run one tool call, record it as a step, and return its tool_result block."""
+        sig = f"{t.name}:{json.dumps(t.input, sort_keys=True)}"
+        self.call_counts[sig] = self.call_counts.get(sig, 0) + 1
 
-        messages.append({"role": "user", "content": tool_results})
-        if loop_detected:
-            stop_reason = "loop_detected"
-            break
+        result = self.env.call(t.name, t.input)
+        logged = self.env.action_log[-1]
+        step = {
+            "index": len(self.steps) + 1,
+            "iteration": turn["iteration"],
+            "decision": turn["decision"],
+            "decision_source": turn["decision_source"],
+            "tool": t.name,
+            "kind": shop_env.tool_kind(t.name),
+            "input": t.input,
+            "result": result,
+            "status": shop_env.result_status(result),
+            "env_events": logged["events"],
+            "consents_at_call": logged["consents_at_call"],
+            "order_customer": logged["order_customer"],
+            "adaptation": None,
+            "retry_of": None,
+        }
+        # Calls made in the same turn as a failure were chosen before the agent
+        # saw it, so only a later turn can count as reacting to it.
+        last_problem = self.last_problem
+        if last_problem and turn["iteration"] > last_problem["iteration"]:
+            if sig == last_problem["sig"]:
+                step["retry_of"] = last_problem["step"]
+            else:
+                step["adaptation"] = {"after_step": last_problem["step"], "problem": last_problem["problem"]}
+            self.last_problem = None
+        problem = observed_problem(t.name, result, step["status"])
+        if problem:
+            self.last_problem = {"step": step["index"], "iteration": turn["iteration"], "sig": sig, "problem": problem}
 
-    if not final_text and turns:
-        final_text = turns[-1]["text"]
+        self.steps.append(step)
+        self.case.observe(step)
+        return {"type": "tool_result", "tool_use_id": t.id, "content": json.dumps(result, default=str)}
 
-    final_state = env.state()
-
-    return {
-        "scenario_id": scenario.get("id"),
-        "agent_version": agent_version,
-        "model": model,
-        "goal": goal,
-        "customer_id": env.session_customer,
-        "steps": steps,
-        "turns": turns,
-        "final_text": final_text,
-        "stop_reason": stop_reason,
-        "hit_iteration_cap": stop_reason != "completed",
-        "llm_calls": llm_calls,
-        "providers": providers_used,
-        "duration_s": round(time.time() - started, 2),
-        "env_events": env.event_log,
-        "case_file": case.to_dict(),
-        "final_state": final_state,
-    }
+    def trace(self, scenario_id=None) -> dict:
+        return {
+            "scenario_id": scenario_id,
+            "agent_version": self.agent_version,
+            "model": self.model,
+            "goal": self.goal,
+            "customer_id": self.env.session_customer,
+            "steps": self.steps,
+            "turns": self.turns,
+            "final_text": self.final_text,
+            "stop_reason": self.stop_reason,
+            "hit_iteration_cap": self.stop_reason not in ("completed", "waiting_for_customer"),
+            "llm_calls": self.llm_calls,
+            "providers": self.providers_used,
+            "duration_s": round(self.busy_s, 2),
+            "env_events": self.env.event_log,
+            "case_file": self.case.to_dict(),
+            "final_state": self.env.state(),
+        }

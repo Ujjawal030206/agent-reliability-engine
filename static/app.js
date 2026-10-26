@@ -142,9 +142,10 @@ function showView(name) {
   });
 
   // The header "Run Evaluation" button is the wrong verb on the red-team view, and the
-  // resolution view has its own agent versions and run controls.
-  $("#btn-header-run").classList.toggle("hidden", name === "redteam" || name === "resolution");
-  $$(".engine-version-control").forEach((el) => el.classList.toggle("hidden", name === "resolution"));
+  // resolution and chat views have their own agent versions and controls.
+  const ownControls = name === "resolution" || name === "chat";
+  $("#btn-header-run").classList.toggle("hidden", name === "redteam" || ownControls);
+  $$(".engine-version-control").forEach((el) => el.classList.toggle("hidden", ownControls));
 
   if (name === "analytics") loadRuns();
   if (name === "resolution" && typeof rsLoadReports === "function") rsLoadReports();

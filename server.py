@@ -27,7 +27,7 @@ import llm_providers
 from src import (
     agent_under_test, failure_classifier, reliability_scorecard, db,
     scenario_generator, mock_tools, red_team_agent,
-    resolution_agent, resolution_eval,
+    resolution_agent, resolution_eval, live_chat,
 )
 
 load_dotenv()
@@ -50,6 +50,17 @@ app = FastAPI(title="Agent Reliability Engine API")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def revalidate_frontend(request, call_next):
+    """Make browsers check the dashboard files on every load, so a deploy never
+    pairs new HTML with a cached old script. Unchanged files still come back
+    as a cheap 304."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
 
 
 @app.exception_handler(llm_providers.ProviderError)
@@ -274,6 +285,71 @@ def get_resolution_report(name: str):
         raise HTTPException(status_code=404, detail="Report not found.")
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+# ---------------------------------------------------------------------------
+# Live chat: a person types as the customer, the agent works the case live
+# ---------------------------------------------------------------------------
+
+CHATS = live_chat.ChatStore()
+
+
+@app.get("/api/chat/setup")
+def chat_setup():
+    return {
+        "customers": live_chat.customers(),
+        "disruptions": [{"key": key, "label": d["label"], "detail": d["detail"]}
+                        for key, d in live_chat.DISRUPTIONS.items()],
+        "agent_versions": list(resolution_agent.SYSTEM_PROMPTS),
+        "max_message_chars": live_chat.MAX_MESSAGE_CHARS,
+    }
+
+
+class ChatStartRequest(BaseModel):
+    customer_id: str = "cust_88"
+    disruptions: List[str] = []
+    agent_version: str = "v2_verified"
+
+
+@app.post("/api/chat")
+def start_chat(req: ChatStartRequest):
+    version = _resolution_version(req.agent_version)
+    try:
+        chat = CHATS.create(_client(), req.customer_id, req.disruptions, version)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except live_chat.ChatBusy as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    return chat.snapshot()
+
+
+def _chat(chat_id: str):
+    chat = CHATS.get(chat_id)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="This chat has expired. Start a new one.")
+    return chat
+
+
+class ChatMessageRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/chat/{chat_id}/messages")
+def send_chat_message(chat_id: str, req: ChatMessageRequest):
+    """Starts the agent's turn and returns at once; poll GET /api/chat/{chat_id} for its steps."""
+    chat = _chat(chat_id)
+    try:
+        chat.send(req.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except live_chat.ChatBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return chat.snapshot()
+
+
+@app.get("/api/chat/{chat_id}")
+def get_chat(chat_id: str):
+    return _chat(chat_id).snapshot()
 
 
 # Serve the frontend last, so it doesn't shadow the /api routes above.

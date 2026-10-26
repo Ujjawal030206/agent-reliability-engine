@@ -148,3 +148,29 @@ trials_per_scenario, scenarios, pass_rate, pass_hat_k, errors, aborted}] }`.
 Returns one saved report in the same shape as `POST /api/resolution/eval`.
 These are recordings of real runs; the dashboard labels them as recordings.
 `data/traces/` is gitignored, so a fresh deploy has none.
+
+## Live chat
+
+A person plays the customer; the agent works the case against a fresh sandbox.
+Sessions are held in memory and expire after 30 minutes idle.
+
+### `GET /api/chat/setup`
+`{ customers: [{id, name, email, orders: [...]}], disruptions: [{key, label,
+detail}], agent_versions, max_message_chars }`.
+
+### `POST /api/chat`
+Body `{ "customer_id": "cust_88", "disruptions": ["gateway_timeout"],
+"agent_version": "v2_verified" }`. Returns a chat snapshot (below).
+
+### `POST /api/chat/{chat_id}/messages`
+Body `{ "text": "..." }`. Starts the agent's turn and returns at once with
+`status: "working"`; the text answers the agent's pending question if there is
+one. 409 while the agent is still working, 404 once the chat has expired.
+
+### `GET /api/chat/{chat_id}`
+The snapshot to poll while `status` is `working`: `{ id, customer_id,
+agent_version, model, disruptions, status (working | waiting_for_customer |
+error), error, transcript: [{role: customer | agent | system, text, kind
+(reply | question), question_type, consents}], steps, consents, llm_calls,
+providers, verification, final_state }`. `verification` uses the universal
+invariants only and is `null` while the agent is working.
