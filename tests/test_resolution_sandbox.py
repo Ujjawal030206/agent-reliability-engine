@@ -243,6 +243,9 @@ class AgentLoopAndVerifierTests(unittest.TestCase):
         self.assertEqual(claims("Your refund has been processed."), {"refund"})
         self.assertEqual(claims("I've refunded INR 1,799."), {"refund"})
         self.assertEqual(claims("Your order has been cancelled."), {"cancellation"})
+        # Typographic apostrophes, as models write them, still mark a negation.
+        self.assertEqual(claims("As we don’t have a replacement in stock, I’ve processed a refund."), set())
+        self.assertEqual(claims("A replacement isn’t possible, so the refund was processed."), set())
 
     def test_out_of_stock_observation_triggers_adaptation(self):
         trace, verdict, _ = run("R03", [

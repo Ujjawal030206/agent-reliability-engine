@@ -54,7 +54,9 @@ ALLOWED_RESOLUTIONS = {"cancellation", "replacement", "refund", "escalation", "n
 
 def claimed_actions(text: str) -> set:
     claims = set()
-    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text or ""):
+    # Models often write typographic apostrophes ("don’t"); NEGATION is written with straight ones.
+    text = (text or "").replace("’", "'").replace("‘", "'")
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
         if not sentence.strip() or NEGATION.search(sentence):
             continue
         for kind, pattern in CLAIM_PATTERNS.items():

@@ -130,16 +130,24 @@ and no claim the backend contradicts.
 
 ### Results
 
-Live runs on Groq's free tier, one trial per scenario (13 Sept 2026), agent
-model `openai/gpt-oss-120b`:
+Live runs on Groq's free tier with agent model `openai/gpt-oss-120b`, all 12
+scenarios, one trial per scenario on each of two days (13 Sept and 27 Oct
+2026; the September baseline run covered R01 to R06 before the daily token
+limit). Scores use the current verifier, re-run over the saved traces:
 
-| Agent | Completed | Passed | Failed |
-|---|---|---|---|
-| `v2_verified` | 12 / 12 | 12 | none |
-| `v1_baseline` | 6 / 12 | 4 | R03 (stopped without resolving), R06 (never escalated the warranty claim) |
+| Agent | Trials passed | Failures |
+|---|---|---|
+| `v2_verified` | 23 / 24 | R12 on 27 Oct: after the inventory outage it re-checked stock, then stopped without acting or replying |
+| `v1_baseline` | 16 / 18 | R03 and R06 on 13 Sept: stopped without resolving, and never escalated the warranty claim |
 
-The `v1_baseline` run stopped when the model's 200K tokens/day free-tier limit
-was reached; R07 to R12 have not yet been run on it.
+On this model the two prompts are close, and every failure above passed on its
+other day. Single trials are not enough to rank agents; run `--trials 3`.
+
+While reviewing these runs, the verifier itself produced a false failure: the
+model wrote "don’t" with a typographic apostrophe, which the negation check
+did not recognise, so a correct reply was flagged as a false completion claim.
+The check now normalises apostrophes, a test covers it, and every saved run
+was re-scored.
 
 Self-hardening, `v1_baseline` on `openai/gpt-oss-20b` (20b also proposing
 rules), R03 and R06, one round: the baseline passed 0 of 2. The loop proposed
