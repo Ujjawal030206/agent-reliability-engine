@@ -134,6 +134,9 @@ $("#ch-suggestions").addEventListener("click", (e) => {
 
 /* ------------------------------------------------------------- messages */
 
+// Models often write **bold** in replies; show it as bold instead of raw asterisks.
+const chAgentText = (text) => esc(text).replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+
 function chBubble(m) {
   if (m.role === "customer") {
     const consent = (m.consents || []).length
@@ -154,7 +157,7 @@ function chBubble(m) {
           <span class="material-symbols-outlined text-[14px] text-secondary">support_agent</span> Riley · ShopFast
           ${asking ? chip("asks you · " + modeLabel(m.question_type || "question"), PINK) : ""}
         </div>
-        <div class="rounded-lg rounded-tl-none border ${asking ? "border-tertiary/40 bg-tertiary/10" : "border-[#2D333B] bg-surface-container-high"} px-3 py-2 font-body-md text-on-surface whitespace-pre-wrap">${esc(m.text || "(no reply)")}</div>
+        <div class="rounded-lg rounded-tl-none border ${asking ? "border-tertiary/40 bg-tertiary/10" : "border-[#2D333B] bg-surface-container-high"} px-3 py-2 font-body-md text-on-surface whitespace-pre-wrap">${chAgentText(m.text || "(no reply)")}</div>
       </div>`;
   }
   return `
