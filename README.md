@@ -1,6 +1,7 @@
 # 🛡️ Agent Reliability Engine
 
 [![tests](https://github.com/Ujjawal030206/agent-reliability-engine/actions/workflows/tests.yml/badge.svg)](https://github.com/Ujjawal030206/agent-reliability-engine/actions/workflows/tests.yml)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/Ujjawal030206/badge.svg)](https://hub.xerj.org/contributors/Ujjawal030206)
 
 *Autonomous agents · deterministic verification · reliability testing*
 
